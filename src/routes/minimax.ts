@@ -44,7 +44,7 @@ minimax.post('/tts', async (c) => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'speech-02-hd',
+        model: 'speech-02-turbo',
         text,
         stream: false,
         voice_setting: {

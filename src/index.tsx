@@ -391,6 +391,58 @@ function getIndexHTML(): string {
   </div>
 </div>
 
+<!-- 記憶編集モーダル -->
+<div id="modal-edit-memory" class="hidden fixed inset-0 modal-overlay z-50 flex items-center justify-center p-4">
+  <div class="bg-navy-800 rounded-2xl border border-white/20 w-full max-w-lg shadow-2xl">
+    <div class="flex items-center justify-between p-5 border-b border-white/10">
+      <h3 class="font-serif-jp text-gold-400 font-semibold text-lg"><i class="fas fa-pen mr-2 text-base"></i>記憶を編集</h3>
+      <button onclick="closeModal('modal-edit-memory')" class="text-gray-400 hover:text-white">
+        <i class="fas fa-times"></i>
+      </button>
+    </div>
+    <div class="p-5 space-y-4">
+      <input type="hidden" id="edit-mem-id">
+      <div>
+        <label class="block text-xs text-gray-400 mb-1">タイトル <span class="text-red-400">*</span></label>
+        <input id="edit-mem-title" type="text" placeholder="例: 父の機織り機"
+          class="w-full bg-navy-900 border border-white/20 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gold-500/50">
+      </div>
+      <div class="grid grid-cols-3 gap-3">
+        <div>
+          <label class="block text-xs text-gray-400 mb-1">時期</label>
+          <input id="edit-mem-period" type="text" placeholder="例: 1960年代"
+            class="w-full bg-navy-900 border border-white/20 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gold-500/50">
+        </div>
+        <div>
+          <label class="block text-xs text-gray-400 mb-1">場所</label>
+          <input id="edit-mem-location" type="text" placeholder="例: 実家"
+            class="w-full bg-navy-900 border border-white/20 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gold-500/50">
+        </div>
+        <div>
+          <label class="block text-xs text-gray-400 mb-1">感情</label>
+          <input id="edit-mem-emotion" type="text" placeholder="例: 懐かしい"
+            class="w-full bg-navy-900 border border-white/20 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gold-500/50">
+        </div>
+      </div>
+      <div>
+        <label class="block text-xs text-gray-400 mb-1">内容 <span class="text-red-400">*</span></label>
+        <textarea id="edit-mem-content" rows="6" placeholder="記憶・エピソードの詳細"
+          class="w-full bg-navy-900 border border-white/20 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gold-500/50 resize-none leading-relaxed"></textarea>
+      </div>
+    </div>
+    <div class="flex gap-3 p-5 pt-0">
+      <button onclick="closeModal('modal-edit-memory')"
+        class="flex-1 py-2 rounded-lg border border-white/20 text-sm text-gray-400 hover:text-white transition-colors">
+        キャンセル
+      </button>
+      <button onclick="saveEditMemory()"
+        class="flex-1 py-2 rounded-lg bg-gold-500 text-navy-900 text-sm font-semibold hover:bg-gold-400 transition-colors">
+        <i class="fas fa-save mr-1"></i>保存する
+      </button>
+    </div>
+  </div>
+</div>
+
 <!-- ボイスクローンモーダル -->
 <div id="modal-voice-clone" class="hidden fixed inset-0 modal-overlay z-50 flex items-center justify-center p-4">
   <div class="bg-navy-800 rounded-2xl border border-white/20 w-full max-w-md shadow-2xl">
@@ -607,14 +659,19 @@ function renderMemoryList() {
   container.innerHTML = state.memories.map(m => \`
     <div class="rounded-xl border border-white/10 bg-navy-900/50 p-3 hover:border-gold-500/30 transition-all">
       <div class="flex items-start justify-between gap-2">
-        <div class="flex-1 min-w-0">
+        <div class="flex-1 min-w-0 cursor-pointer" onclick="openEditMemory(\${m.id})">
           <div class="text-sm font-medium text-white truncate">\${m.title}</div>
           <div class="text-xs text-gray-400 mt-0.5">\${[m.period, m.location, m.emotion].filter(Boolean).join(' · ')}</div>
           <div class="text-xs text-gray-500 mt-1 line-clamp-2">\${m.content}</div>
         </div>
-        <button onclick="deleteMemory(\${m.id})" class="text-gray-600 hover:text-red-400 transition-colors flex-shrink-0 mt-0.5">
-          <i class="fas fa-trash text-xs"></i>
-        </button>
+        <div class="flex flex-col gap-1.5 flex-shrink-0 pt-0.5">
+          <button onclick="openEditMemory(\${m.id})" class="text-gray-500 hover:text-gold-400 transition-colors" title="編集">
+            <i class="fas fa-pen text-xs"></i>
+          </button>
+          <button onclick="deleteMemory(\${m.id})" class="text-gray-500 hover:text-red-400 transition-colors" title="削除">
+            <i class="fas fa-trash text-xs"></i>
+          </button>
+        </div>
       </div>
     </div>
   \`).join('')
@@ -651,6 +708,45 @@ async function deleteMemory(id) {
   await api.delete(\`/api/memories/\${id}\`)
   showToast('削除しました', 'success')
   await loadMemories(state.selectedCharId)
+}
+
+function openEditMemory(id) {
+  const m = state.memories.find(x => x.id === id)
+  if (!m) return
+  document.getElementById('edit-mem-id').value = id
+  document.getElementById('edit-mem-title').value = m.title || ''
+  document.getElementById('edit-mem-period').value = m.period || ''
+  document.getElementById('edit-mem-location').value = m.location || ''
+  document.getElementById('edit-mem-emotion').value = m.emotion || ''
+  document.getElementById('edit-mem-content').value = m.content || ''
+  openModal('modal-edit-memory')
+}
+
+async function saveEditMemory() {
+  const id = document.getElementById('edit-mem-id').value
+  const title = document.getElementById('edit-mem-title').value.trim()
+  const content = document.getElementById('edit-mem-content').value.trim()
+  if (!title || !content) return showToast('タイトルと内容は必須です', 'error')
+
+  const r = await fetch(\`/api/memories/\${id}\`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title,
+      content,
+      period:   document.getElementById('edit-mem-period').value.trim()   || null,
+      location: document.getElementById('edit-mem-location').value.trim() || null,
+      emotion:  document.getElementById('edit-mem-emotion').value.trim()  || null,
+    }),
+  })
+  const data = await r.json()
+  if (data.success) {
+    closeModal('modal-edit-memory')
+    showToast('記憶を更新しました', 'success')
+    await loadMemories(state.selectedCharId)
+  } else {
+    showToast(data.error || 'エラーが発生しました', 'error')
+  }
 }
 
 // ── チャット ─────────────────────────────────────────────
@@ -1025,7 +1121,7 @@ function showToast(msg, type = 'info') {
 }
 
 // クリックでモーダルを閉じる
-['modal-new-character','modal-new-memory','modal-voice-clone'].forEach(id => {
+['modal-new-character','modal-new-memory','modal-edit-memory','modal-voice-clone'].forEach(id => {
   document.getElementById(id).addEventListener('click', (e) => {
     if (e.target.id === id) closeModal(id)
   })
