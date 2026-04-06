@@ -496,25 +496,87 @@ function renderSessionList() {
 
   container.innerHTML = state.sessions.map(s => {
     const isActive = s.id === state.currentSessionId
-    const pinIcon = s.is_pinned ? '<i class="fas fa-thumbtack text-gold-400 text-xs"></i>' : ''
+    const pinIcon = s.is_pinned ? '<i class="fas fa-thumbtack text-gold-400 text-xs flex-shrink-0"></i>' : ''
     const msgCount = s.message_count > 0 ? `<span class="text-gray-500 text-xs">${s.message_count}件</span>` : ''
     const activeClass = isActive
       ? 'border-gold-500/60 bg-gold-500/10'
       : 'border-white/10 bg-navy-900/50 hover:border-gold-500/30'
     const shortTitle = s.title.length > 16 ? s.title.slice(0, 16) + '…' : s.title
-    return `<div class="flex items-center gap-1 rounded-lg border cursor-pointer transition-all px-2 py-1.5 ${activeClass}" onclick="selectSession(${s.id})">
+    return `<div class="flex items-center gap-1 rounded-lg border cursor-pointer transition-all px-2 py-1.5 ${activeClass}" data-session-id="${s.id}" onclick="selectSession(${s.id})">
       <div class="flex-1 min-w-0">
         <div class="flex items-center gap-1">
           ${pinIcon}
-          <span class="text-xs text-white truncate">${shortTitle}</span>
+          <span class="session-title-label text-xs text-white truncate" title="${s.title}">${shortTitle}</span>
         </div>
         ${msgCount}
       </div>
-      <button onclick="event.stopPropagation(); deleteSession(${s.id})" class="text-gray-600 hover:text-red-400 transition-colors flex-shrink-0" title="削除">
-        <i class="fas fa-times text-xs"></i>
-      </button>
+      <div class="flex items-center gap-1 flex-shrink-0">
+        <button onclick="event.stopPropagation(); startRenameSession(${s.id})" class="text-gray-600 hover:text-gold-400 transition-colors" title="名前を変更">
+          <i class="fas fa-pen text-xs"></i>
+        </button>
+        <button onclick="event.stopPropagation(); deleteSession(${s.id})" class="text-gray-600 hover:text-red-400 transition-colors" title="削除">
+          <i class="fas fa-times text-xs"></i>
+        </button>
+      </div>
     </div>`
   }).join('')
+}
+
+// セッション名のインライン編集を開始
+function startRenameSession(sessionId) {
+  const sess = state.sessions.find(s => s.id === sessionId)
+  if (!sess) return
+
+  const card = document.querySelector(`[data-session-id="${sessionId}"]`)
+  if (!card) return
+
+  // 既に編集中なら無視
+  if (card.querySelector('.session-rename-input')) return
+
+  const titleLabel = card.querySelector('.session-title-label')
+  if (!titleLabel) return
+
+  // タイトルラベルをinputに差し替え
+  const input = document.createElement('input')
+  input.type = 'text'
+  input.value = sess.title
+  input.maxLength = 50
+  input.className = 'session-rename-input text-xs bg-navy-800 border border-gold-500/50 rounded px-1.5 py-0.5 text-white w-28 focus:outline-none focus:border-gold-400'
+  input.onclick = (e) => e.stopPropagation()
+
+  titleLabel.replaceWith(input)
+  input.focus()
+  input.select()
+
+  const commit = async () => {
+    const newTitle = input.value.trim()
+    if (!newTitle || newTitle === sess.title) {
+      // 変更なし or 空 → 元に戻す
+      renderSessionList()
+      return
+    }
+    await renameSession(sessionId, newTitle)
+  }
+
+  input.addEventListener('blur', commit)
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur() }
+    if (e.key === 'Escape') { e.stopPropagation(); renderSessionList() }
+  })
+}
+
+// セッション名をAPIで更新
+async function renameSession(sessionId, newTitle) {
+  const data = await api.put(`/api/chat/sessions/${sessionId}/title`, { title: newTitle })
+  if (data.success) {
+    const idx = state.sessions.findIndex(s => s.id === sessionId)
+    if (idx >= 0) state.sessions[idx].title = newTitle
+    renderSessionList()
+    showToast('名前を変更しました', 'success')
+  } else {
+    showToast(data.error || '変更に失敗しました', 'error')
+    renderSessionList()
+  }
 }
 
 // セッションを選択して履歴を表示

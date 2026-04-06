@@ -90,6 +90,39 @@ chat.delete('/sessions/:sessionId', async (c) => {
 })
 
 // ─────────────────────────────────────────────────────────
+// セッションのタイトル更新
+// PUT /api/chat/sessions/:sessionId/title
+// body: { title: string }
+// ─────────────────────────────────────────────────────────
+chat.put('/sessions/:sessionId/title', async (c) => {
+  const user = await validateSession(c.env.DB, getToken(c))
+  if (!user) return c.json({ success: false, error: '認証が必要です' }, 401)
+
+  const sessionId = c.req.param('sessionId')
+  const body = await c.req.json()
+  const title = (body.title || '').trim()
+  if (!title) return c.json({ success: false, error: 'タイトルを入力してください' }, 400)
+  if (title.length > 50) return c.json({ success: false, error: 'タイトルは50文字以内で入力してください' }, 400)
+
+  const session = await c.env.DB.prepare(
+    `SELECT cs.id FROM conversation_sessions cs
+     JOIN characters ch ON cs.character_id = ch.id
+     WHERE cs.id = ? AND ch.user_id = ?`
+  ).bind(sessionId, user.id).first()
+  if (!session) return c.json({ success: false, error: 'セッションが見つかりません' }, 404)
+
+  await c.env.DB.prepare(
+    'UPDATE conversation_sessions SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+  ).bind(title, sessionId).run()
+
+  const updated = await c.env.DB.prepare(
+    'SELECT * FROM conversation_sessions WHERE id = ?'
+  ).bind(sessionId).first()
+
+  return c.json({ success: true, data: updated })
+})
+
+// ─────────────────────────────────────────────────────────
 // セッションのpin切り替え（記憶に引き継ぐ）
 // PUT /api/chat/sessions/:sessionId/pin
 // body: { is_pinned: 0|1 }
