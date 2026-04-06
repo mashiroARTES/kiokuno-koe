@@ -4,14 +4,73 @@ import { validateSession } from './auth'
 type Bindings = {
   DB: D1Database
   MINIMAX_API_KEY: string
+  GEMINI_API_KEY: string
 }
 
 const chat = new Hono<{ Bindings: Bindings }>()
 
 const MINIMAX_BASE_URL = 'https://api.minimax.io/v1'
+// Gemini 3.1 Flash Lite（テキスト生成用）
+const GEMINI_MODEL = 'gemini-3.1-flash-lite-preview'
+const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models'
 
 function getToken(c: any): string | undefined {
   return c.req.header('Authorization')?.replace('Bearer ', '')
+}
+
+// ── Gemini テキスト生成ヘルパー ────────────────────────────
+// Gemini API は OpenAI 互換フォーマットではなく独自フォーマット
+// systemInstruction + contents(role:user/model) を使う
+async function callGemini(
+  apiKey: string,
+  systemInstruction: string,
+  history: { role: string; content: string }[],
+  userMessage: string,
+  options: { maxTokens?: number; temperature?: number } = {}
+): Promise<string> {
+  const { maxTokens = 300, temperature = 0.8 } = options
+
+  // Gemini は role が 'user' / 'model'
+  const contents = [
+    ...history.map(h => ({
+      role: h.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: h.content }],
+    })),
+    { role: 'user', parts: [{ text: userMessage }] },
+  ]
+
+  const body = {
+    system_instruction: { parts: [{ text: systemInstruction }] },
+    contents,
+    generationConfig: {
+      maxOutputTokens: maxTokens,
+      temperature,
+      topP: 0.95,
+    },
+  }
+
+  const resp = await fetch(
+    `${GEMINI_API_BASE}/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }
+  )
+
+  if (!resp.ok) {
+    const errText = await resp.text()
+    console.error('Gemini API error:', resp.status, errText)
+    throw new Error(`Gemini APIエラー: ${resp.status}`)
+  }
+
+  const data: any = await resp.json()
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || ''
+  if (!text) {
+    console.error('Gemini empty response:', JSON.stringify(data))
+    throw new Error('Gemini から空の応答が返されました')
+  }
+  return text.trim()
 }
 
 // ─────────────────────────────────────────────────────────
@@ -136,7 +195,7 @@ chat.put('/sessions/:sessionId/pin', async (c) => {
   const is_pinned = body.is_pinned ? 1 : 0
 
   const session = await c.env.DB.prepare(
-    `SELECT cs.id, cs.character_id FROM conversation_sessions cs
+    `SELECT cs.id, cs.character_id, cs.summary FROM conversation_sessions cs
      JOIN characters ch ON cs.character_id = ch.id
      WHERE cs.id = ? AND ch.user_id = ?`
   ).bind(sessionId, user.id).first() as any
@@ -144,7 +203,7 @@ chat.put('/sessions/:sessionId/pin', async (c) => {
 
   // pinにする場合はサマリーが未生成なら自動生成
   if (is_pinned && !session.summary) {
-    await generateSessionSummary(c.env.DB, c.env.MINIMAX_API_KEY, sessionId, session.character_id)
+    await generateSessionSummary(c.env.DB, c.env.GEMINI_API_KEY, sessionId, session.character_id)
   }
 
   await c.env.DB.prepare(
@@ -174,12 +233,17 @@ chat.post('/sessions/:sessionId/summarize', async (c) => {
   ).bind(sessionId, user.id).first() as any
   if (!session) return c.json({ success: false, error: 'セッションが見つかりません' }, 404)
 
-  const summary = await generateSessionSummary(c.env.DB, c.env.MINIMAX_API_KEY, sessionId, session.character_id)
+  const summary = await generateSessionSummary(c.env.DB, c.env.GEMINI_API_KEY, sessionId, session.character_id)
   return c.json({ success: true, data: { summary } })
 })
 
-// ── サマリー生成ヘルパー ──────────────────────────────────
-async function generateSessionSummary(db: D1Database, apiKey: string, sessionId: string | number, characterId: number): Promise<string> {
+// ── サマリー生成ヘルパー（Gemini使用）────────────────────
+async function generateSessionSummary(
+  db: D1Database,
+  geminiApiKey: string,
+  sessionId: string | number,
+  characterId: number
+): Promise<string> {
   const { results: msgs } = await db.prepare(
     `SELECT role, content FROM conversations
      WHERE session_id = ?
@@ -188,40 +252,25 @@ async function generateSessionSummary(db: D1Database, apiKey: string, sessionId:
 
   if (!msgs || msgs.length === 0) return ''
 
-  const transcript = msgs.map((m: any) => `${m.role === 'user' ? 'ユーザー' : 'キャラクター'}: ${m.content}`).join('\n')
+  const transcript = msgs
+    .map((m: any) => `${m.role === 'user' ? 'ユーザー' : 'キャラクター'}: ${m.content}`)
+    .join('\n')
   const char: any = await db.prepare('SELECT name FROM characters WHERE id = ?').bind(characterId).first()
   const charName = char?.name || 'キャラクター'
 
   try {
-    const resp = await fetch(`${MINIMAX_BASE_URL}/text/chatcompletion_v2`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'MiniMax-Text-01',
-        messages: [
-          {
-            role: 'system',
-            content: `以下の会話録を読み、${charName}との会話の要点を3〜5文で日本語でまとめてください。話題・感情・重要な出来事を含めてください。`,
-          },
-          { role: 'user', content: transcript },
-        ],
-        max_tokens: 200,
-        temperature: 0.5,
-      }),
-    })
-
-    if (resp.ok) {
-      const data: any = await resp.json()
-      const summary = data.choices?.[0]?.message?.content || ''
-      if (summary) {
-        await db.prepare(
-          'UPDATE conversation_sessions SET summary = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
-        ).bind(summary, sessionId).run()
-        return summary
-      }
+    const summary = await callGemini(
+      geminiApiKey,
+      `以下の会話録を読み、${charName}との会話の要点を3〜5文で日本語でまとめてください。話題・感情・重要な出来事を含めてください。`,
+      [],
+      transcript,
+      { maxTokens: 200, temperature: 0.4 }
+    )
+    if (summary) {
+      await db.prepare(
+        'UPDATE conversation_sessions SET summary = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+      ).bind(summary, sessionId).run()
+      return summary
     }
   } catch (e) {
     console.error('Summary generation error:', e)
@@ -238,8 +287,9 @@ chat.post('/', async (c) => {
   const user = await validateSession(c.env.DB, getToken(c))
   if (!user) return c.json({ success: false, error: '認証が必要です' }, 401)
 
-  const apiKey = c.env?.MINIMAX_API_KEY || ''
-  if (!apiKey) return c.json({ success: false, error: 'APIキーが設定されていません' }, 500)
+  const geminiApiKey = c.env?.GEMINI_API_KEY || ''
+  const minimaxApiKey = c.env?.MINIMAX_API_KEY || ''
+  if (!geminiApiKey) return c.json({ success: false, error: 'GEMINI_API_KEY が設定されていません' }, 500)
 
   const body = await c.req.json()
   const { character_id, message, use_tts = true, session_id } = body
@@ -269,7 +319,6 @@ chat.post('/', async (c) => {
       return c.json({ success: false, error: 'セッションが見つかりません' }, 404)
     }
   } else {
-    // session_id未指定なら自動作成
     const newSess = await c.env.DB.prepare(
       'INSERT INTO conversation_sessions (character_id, title) VALUES (?, ?)'
     ).bind(character_id, `会話 ${new Date().toLocaleDateString('ja-JP')}`).run()
@@ -334,43 +383,23 @@ ${memoryContext}
 - 感情豊かに、でも穏やかに話す
 - 返答は200文字以内で簡潔に`
 
-  // MiniMax Chat Completion API 呼び出し
+  // Gemini でテキスト生成
   let aiReplyText = ''
   try {
-    const chatMessages = [
-      ...historyMessages,
-      { role: 'user', content: message }
-    ]
-
-    const chatResponse = await fetch(`${MINIMAX_BASE_URL}/text/chatcompletion_v2`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'MiniMax-Text-01',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          ...chatMessages,
-        ],
-        max_tokens: 300,
-        temperature: 0.8,
-        top_p: 0.95,
-      }),
-    })
-
-    if (!chatResponse.ok) {
-      const errText = await chatResponse.text()
-      console.error('Chat API error:', errText)
-      return c.json({ success: false, error: `Chat APIエラー: ${chatResponse.status}` }, 500)
-    }
-
-    const chatData: any = await chatResponse.json()
-    aiReplyText = chatData.choices?.[0]?.message?.content || 'うまく聞き取れませんでした。もう一度お話しいただけますか？'
+    aiReplyText = await callGemini(
+      geminiApiKey,
+      systemPrompt,
+      historyMessages,
+      message,
+      { maxTokens: 300, temperature: 0.8 }
+    )
   } catch (e: any) {
-    console.error('Chat error:', e)
-    return c.json({ success: false, error: e.message }, 500)
+    console.error('Gemini chat error:', e)
+    return c.json({ success: false, error: e.message || 'AI応答の生成に失敗しました' }, 500)
+  }
+
+  if (!aiReplyText) {
+    aiReplyText = 'うまく聞き取れませんでした。もう一度お話しいただけますか？'
   }
 
   // 会話履歴を保存（session_id付き）
@@ -378,15 +407,15 @@ ${memoryContext}
     'INSERT INTO conversations (character_id, session_id, role, content) VALUES (?, ?, ?, ?)'
   ).bind(character_id, currentSessionId, 'user', message).run()
 
-  // TTS生成（オプション）
+  // TTS生成（MiniMaxのまま維持）
   let audioHex: string | null = null
-  if (use_tts && aiReplyText) {
+  if (use_tts && aiReplyText && minimaxApiKey) {
     try {
       const voiceId = character.voice_id || 'Wise_Woman'
       const ttsResponse = await fetch(`${MINIMAX_BASE_URL}/t2a_v2`, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${apiKey}`,
+          'Authorization': `Bearer ${minimaxApiKey}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -455,7 +484,7 @@ ${memoryContext}
 })
 
 // ─────────────────────────────────────────────────────────
-// 音声入力 (STT)
+// 音声入力 (STT) - MiniMax維持
 // ─────────────────────────────────────────────────────────
 chat.post('/stt', async (c) => {
   const user = await validateSession(c.env.DB, getToken(c))
@@ -494,7 +523,6 @@ chat.post('/stt', async (c) => {
 
     const sttData: any = await sttResponse.json()
     const transcript = sttData.text || sttData.data?.text || ''
-
     return c.json({ success: true, data: { transcript } })
   } catch (e: any) {
     return c.json({ success: false, error: e.message }, 500)
@@ -519,13 +547,11 @@ chat.get('/history/:characterId', async (c) => {
   let results
 
   if (sessionId) {
-    // 特定セッションの履歴
     const r = await c.env.DB.prepare(
       'SELECT id, character_id, session_id, role, content, audio_hex, created_at FROM conversations WHERE character_id = ? AND session_id = ? ORDER BY created_at ASC LIMIT ?'
     ).bind(characterId, sessionId, limit).all()
     results = r.results
   } else {
-    // 最新セッションの履歴（後方互換）
     const latestSession: any = await c.env.DB.prepare(
       'SELECT id FROM conversation_sessions WHERE character_id = ? ORDER BY created_at DESC LIMIT 1'
     ).bind(characterId).first()

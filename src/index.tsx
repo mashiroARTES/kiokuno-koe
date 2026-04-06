@@ -13,6 +13,7 @@ import auth, { validateSession } from './routes/auth'
 type Bindings = {
   DB: D1Database
   MINIMAX_API_KEY: string
+  GEMINI_API_KEY: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
