@@ -60,6 +60,9 @@ let state = {
   // 認証
   sessionToken: null,
   currentUser: null,
+  // 会話セッション
+  sessions: [],
+  currentSessionId: null,
 }
 
 // ── API（認証トークン付き） ──────────────────────────────
@@ -289,6 +292,7 @@ function renderCharacterList() {
 
 async function selectCharacter(charId) {
   state.selectedCharId = charId
+  state.currentSessionId = null  // セッションをリセット
   const char = state.characters.find(c => c.id === charId)
   if (!char) return
 
@@ -312,7 +316,7 @@ async function selectCharacter(charId) {
   })
 
   await loadMemories(charId)
-  await loadChatHistory(charId)
+  await loadSessions(charId)  // セッション一覧読み込み
   document.getElementById('empty-state').style.display = 'none'
 }
 
@@ -460,15 +464,185 @@ async function saveEditMemory() {
   }
 }
 
-// ── チャット ─────────────────────────────────────────────
-async function loadChatHistory(characterId) {
-  const data = await api.get('/api/chat/history/' + characterId)
+// ── チャット・セッション管理 ──────────────────────────────
+
+// セッション一覧を読み込んで、最新セッションを自動選択
+async function loadSessions(characterId) {
+  const data = await api.get('/api/chat/sessions/' + characterId)
+  state.sessions = data.data || []
+  renderSessionList()
+
+  if (state.sessions.length > 0) {
+    // 最新セッションを選択
+    await selectSession(state.sessions[0].id)
+  } else {
+    // セッションがない場合は空のチャット画面
+    const chatArea = document.getElementById('chat-area')
+    chatArea.innerHTML = ''
+    showNewConvWelcome()
+    updateSessionControls()
+  }
+}
+
+// セッション一覧をサイドバー（チャットエリア上部）にレンダリング
+function renderSessionList() {
+  const container = document.getElementById('session-list')
+  if (!container) return
+
+  if (state.sessions.length === 0) {
+    container.innerHTML = ''
+    return
+  }
+
+  container.innerHTML = state.sessions.map(s => {
+    const isActive = s.id === state.currentSessionId
+    const pinIcon = s.is_pinned ? '<i class="fas fa-thumbtack text-gold-400 text-xs"></i>' : ''
+    const msgCount = s.message_count > 0 ? `<span class="text-gray-500 text-xs">${s.message_count}件</span>` : ''
+    const activeClass = isActive
+      ? 'border-gold-500/60 bg-gold-500/10'
+      : 'border-white/10 bg-navy-900/50 hover:border-gold-500/30'
+    const shortTitle = s.title.length > 16 ? s.title.slice(0, 16) + '…' : s.title
+    return `<div class="flex items-center gap-1 rounded-lg border cursor-pointer transition-all px-2 py-1.5 ${activeClass}" onclick="selectSession(${s.id})">
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-1">
+          ${pinIcon}
+          <span class="text-xs text-white truncate">${shortTitle}</span>
+        </div>
+        ${msgCount}
+      </div>
+      <button onclick="event.stopPropagation(); deleteSession(${s.id})" class="text-gray-600 hover:text-red-400 transition-colors flex-shrink-0" title="削除">
+        <i class="fas fa-times text-xs"></i>
+      </button>
+    </div>`
+  }).join('')
+}
+
+// セッションを選択して履歴を表示
+async function selectSession(sessionId) {
+  state.currentSessionId = sessionId
+  renderSessionList()
+  updateSessionControls()
+
+  const data = await api.get(`/api/chat/history/${state.selectedCharId}?session_id=${sessionId}`)
   const messages = data.data || []
   const chatArea = document.getElementById('chat-area')
   chatArea.innerHTML = ''
-  // 履歴読み込み: message_id と audio_hex を渡す
-  messages.forEach(m => appendMessage(m.role, m.content, m.audio_hex || null, false, m.id))
-  scrollToBottom()
+  if (messages.length === 0) {
+    showNewConvWelcome()
+  } else {
+    messages.forEach(m => appendMessage(m.role, m.content, m.audio_hex || null, false, m.id))
+    scrollToBottom()
+  }
+}
+
+// 新しい会話を作成
+async function createNewSession() {
+  if (!state.selectedCharId) return
+  const data = await api.post('/api/chat/sessions', {
+    character_id: state.selectedCharId,
+  })
+  if (data.success) {
+    state.sessions.unshift(data.data)
+    renderSessionList()
+    await selectSession(data.data.id)
+    showToast('新しい会話を開始しました', 'success')
+  } else {
+    showToast(data.error || 'エラーが発生しました', 'error')
+  }
+}
+
+// セッションを削除
+async function deleteSession(sessionId) {
+  if (!confirm('この会話を削除しますか？')) return
+  const data = await api.delete('/api/chat/sessions/' + sessionId)
+  if (data.success) {
+    showToast('会話を削除しました', 'success')
+    await loadSessions(state.selectedCharId)
+  } else {
+    showToast(data.error || 'エラー', 'error')
+  }
+}
+
+// 「この会話を覚えておく」チェックボックスのトグル
+async function togglePinSession(checked) {
+  if (!state.currentSessionId) return
+  const data = await api.put(`/api/chat/sessions/${state.currentSessionId}/pin`, {
+    is_pinned: checked ? 1 : 0,
+  })
+  if (data.success) {
+    // stateを更新
+    const idx = state.sessions.findIndex(s => s.id === state.currentSessionId)
+    if (idx >= 0) {
+      state.sessions[idx].is_pinned = checked ? 1 : 0
+      state.sessions[idx].summary = data.data.summary || state.sessions[idx].summary
+    }
+    renderSessionList()
+    updateSessionControls()
+    if (checked) {
+      showToast('この会話を記憶として引き継ぎます', 'success')
+      // サマリーを表示
+      const summaryEl = document.getElementById('session-summary')
+      if (summaryEl && data.data.summary) {
+        summaryEl.textContent = data.data.summary
+        document.getElementById('session-summary-area').classList.remove('hidden')
+      }
+    } else {
+      showToast('引き継ぎを解除しました')
+      document.getElementById('session-summary-area')?.classList.add('hidden')
+    }
+  } else {
+    // チェックを元に戻す
+    document.getElementById('pin-session-checkbox').checked = !checked
+    showToast(data.error || 'エラーが発生しました', 'error')
+  }
+}
+
+// セッションコントロールUI（pinチェック・サマリーなど）を更新
+function updateSessionControls() {
+  const controlsArea = document.getElementById('session-controls')
+  if (!controlsArea) return
+
+  if (!state.currentSessionId) {
+    controlsArea.classList.add('hidden')
+    return
+  }
+
+  const sess = state.sessions.find(s => s.id === state.currentSessionId)
+  if (!sess) {
+    controlsArea.classList.add('hidden')
+    return
+  }
+
+  controlsArea.classList.remove('hidden')
+
+  const pinCheck = document.getElementById('pin-session-checkbox')
+  if (pinCheck) pinCheck.checked = !!sess.is_pinned
+
+  const summaryArea = document.getElementById('session-summary-area')
+  const summaryEl = document.getElementById('session-summary')
+  if (summaryArea && summaryEl) {
+    if (sess.is_pinned && sess.summary) {
+      summaryEl.textContent = sess.summary
+      summaryArea.classList.remove('hidden')
+    } else {
+      summaryArea.classList.add('hidden')
+    }
+  }
+}
+
+function showNewConvWelcome() {
+  const chatArea = document.getElementById('chat-area')
+  chatArea.innerHTML = `<div class="flex flex-col items-center justify-center h-full text-center py-12">
+    <div class="w-16 h-16 rounded-full bg-gold-500/10 border border-gold-500/20 flex items-center justify-center mb-4">
+      <i class="fas fa-comments text-gold-500/50 text-2xl"></i>
+    </div>
+    <p class="text-gray-500 text-sm">新しい会話を始めましょう</p>
+  </div>`
+}
+
+async function loadChatHistory(characterId) {
+  // 後方互換: selectCharacterから直接呼ばれることはもうないが残しておく
+  await loadSessions(characterId)
 }
 
 async function sendMessage() {
@@ -478,6 +652,22 @@ async function sendMessage() {
   const input = document.getElementById('chat-input')
   const message = input.value.trim()
   if (!message) return
+
+  // セッションがない場合は自動作成
+  if (!state.currentSessionId) {
+    const sessData = await api.post('/api/chat/sessions', {
+      character_id: state.selectedCharId,
+    })
+    if (!sessData.success) return showToast('会話の作成に失敗しました', 'error')
+    state.currentSessionId = sessData.data.id
+    state.sessions.unshift(sessData.data)
+    renderSessionList()
+    updateSessionControls()
+    // ウェルカム表示を消す
+    const chatArea = document.getElementById('chat-area')
+    const welcome = chatArea.querySelector('.flex.flex-col.items-center')
+    if (welcome) welcome.remove()
+  }
 
   input.value = ''
   autoResize(input)
@@ -490,13 +680,23 @@ async function sendMessage() {
     const data = await api.post('/api/chat', {
       character_id: state.selectedCharId,
       message,
-      use_tts: true,  // TTS生成は常に行う（自動再生ON/OFFとは独立）
+      use_tts: true,
+      session_id: state.currentSessionId,
     })
     thinkingEl.remove()
 
     if (data.success) {
-      // message_id を渡して再生ボタンに結び付ける
+      // session_idが返ってきた場合は更新（新規作成された場合など）
+      if (data.data.session_id && !state.currentSessionId) {
+        state.currentSessionId = data.data.session_id
+      }
       appendMessage('assistant', data.data.reply, data.data.audio_hex, true, data.data.message_id)
+      // セッション一覧の件数を更新
+      const idx = state.sessions.findIndex(s => s.id === state.currentSessionId)
+      if (idx >= 0) {
+        state.sessions[idx].message_count = (state.sessions[idx].message_count || 0) + 2
+        renderSessionList()
+      }
     } else {
       appendMessage('assistant', '⚠️ ' + (data.error || 'エラーが発生しました'))
     }
@@ -1006,11 +1206,19 @@ function downloadInferenceScript() {
 }
 
 async function clearHistory() {
-  if (!state.selectedCharId) return
-  if (!confirm('会話履歴をすべて削除しますか？')) return
-  await api.delete('/api/chat/history/' + state.selectedCharId)
-  await loadChatHistory(state.selectedCharId)
-  showToast('会話履歴を削除しました', 'success')
+  if (!state.selectedCharId || !state.currentSessionId) return
+  if (!confirm('この会話のメッセージをすべて削除しますか？')) return
+  await api.delete(`/api/chat/history/${state.selectedCharId}?session_id=${state.currentSessionId}`)
+  const chatArea = document.getElementById('chat-area')
+  chatArea.innerHTML = ''
+  showNewConvWelcome()
+  // セッション件数を0に
+  const idx = state.sessions.findIndex(s => s.id === state.currentSessionId)
+  if (idx >= 0) {
+    state.sessions[idx].message_count = 0
+    renderSessionList()
+  }
+  showToast('会話メッセージを削除しました', 'success')
 }
 
 // ── UI ヘルパー ───────────────────────────────────────────

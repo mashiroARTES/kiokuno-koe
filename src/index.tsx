@@ -379,7 +379,7 @@ function getIndexHTML(): string {
         class="w-full py-2.5 px-3 rounded-lg bg-navy-700 border border-white/10 text-sm hover:border-red-500/40 transition-colors flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed text-red-400">
         <i class="fas fa-trash"></i>
         <div class="text-left">
-          <div class="text-xs font-medium">会話履歴をクリア</div>
+          <div class="text-xs font-medium">この会話のメッセージを削除</div>
         </div>
       </button>
     </div>
@@ -398,8 +398,33 @@ function getIndexHTML(): string {
             <p id="char-desc" class="text-xs text-gray-400"></p>
           </div>
         </div>
-        <div id="voice-badge" class="hidden text-xs px-3 py-1 rounded-full bg-gold-500/20 border border-gold-500/40 text-gold-400 cursor-pointer hover:bg-gold-500/30 transition-colors" onclick="openModal('modal-voice-clone')" title="声の設定を変更">
-          <i class="fas fa-microphone-alt mr-1"></i><span id="voice-badge-text">声設定済み</span>
+        <div class="flex items-center gap-3">
+          <!-- 新しい会話ボタン -->
+          <button onclick="createNewSession()"
+            class="flex items-center gap-1.5 text-xs text-gold-400 hover:text-gold-300 bg-gold-500/10 hover:bg-gold-500/20 border border-gold-500/30 hover:border-gold-500/50 rounded-full px-3 py-1.5 transition-all">
+            <i class="fas fa-plus text-xs"></i>
+            新しい会話
+          </button>
+          <div id="voice-badge" class="hidden text-xs px-3 py-1 rounded-full bg-gold-500/20 border border-gold-500/40 text-gold-400 cursor-pointer hover:bg-gold-500/30 transition-colors" onclick="openModal('modal-voice-clone')" title="声の設定を変更">
+            <i class="fas fa-microphone-alt mr-1"></i><span id="voice-badge-text">声設定済み</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- セッション一覧（横スクロール） -->
+      <div id="session-list" class="flex gap-2 mt-2 overflow-x-auto scrollbar-thin pb-1"></div>
+
+      <!-- この会話を覚えておくコントロール -->
+      <div id="session-controls" class="hidden mt-2 flex items-start gap-3">
+        <label class="flex items-center gap-2 cursor-pointer select-none">
+          <input type="checkbox" id="pin-session-checkbox" onchange="togglePinSession(this.checked)"
+            class="w-4 h-4 accent-gold-500 cursor-pointer">
+          <span class="text-xs text-gray-300">この会話を覚えておく（他の会話に引き継ぐ）</span>
+        </label>
+        <!-- サマリー表示エリア -->
+        <div id="session-summary-area" class="hidden flex-1">
+          <div class="text-xs text-gray-500 mb-0.5"><i class="fas fa-file-alt mr-1"></i>要約</div>
+          <div id="session-summary" class="text-xs text-gray-400 bg-navy-900/50 rounded-lg px-3 py-2 border border-white/10 leading-relaxed"></div>
         </div>
       </div>
     </div>
