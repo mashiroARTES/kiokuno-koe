@@ -296,7 +296,7 @@ async function sendMessage() {
     const data = await api.post('/api/chat', {
       character_id: state.selectedCharId,
       message,
-      use_tts: state.ttsEnabled,
+      use_tts: true,  // TTS生成は常に行う（自動再生ON/OFFとは独立）
     })
     thinkingEl.remove()
 
@@ -367,6 +367,8 @@ function appendMessage(role, content, audioHex, scroll, messageId) {
   chatArea.appendChild(div)
   if (scroll) scrollToBottom()
 
+  // 自動再生フラグが ON かつ audioHex がある場合のみ自動再生
+  // （再生ボタン自体は ttsEnabled に関わらず常に表示される）
   if (audioHex && state.ttsEnabled) playAudio(audioHex)
   return div
 }
@@ -453,16 +455,19 @@ function toggleTTS() {
   state.ttsEnabled = !state.ttsEnabled
   const icon = document.getElementById('tts-icon')
   const btn  = document.getElementById('btn-tts-toggle')
+  const label = document.getElementById('tts-label')
   if (state.ttsEnabled) {
     icon.className = 'fas fa-volume-up text-gold-400'
-    btn.classList.remove('border-white/20')
+    btn.classList.remove('border-white/20', 'bg-navy-900/60')
     btn.classList.add('border-gold-500/40')
-    showToast('音声読み上げ: ON', 'info')
+    if (label) label.textContent = '自動再生 ON'
+    showToast('自動再生: ON', 'info')
   } else {
     icon.className = 'fas fa-volume-mute text-gray-500'
     btn.classList.remove('border-gold-500/40')
-    btn.classList.add('border-white/20')
-    showToast('音声読み上げ: OFF', 'info')
+    btn.classList.add('border-white/20', 'bg-navy-900/60')
+    if (label) label.textContent = '自動再生 OFF'
+    showToast('自動再生: OFF', 'info')
   }
 }
 

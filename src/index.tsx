@@ -319,9 +319,10 @@ function getIndexHTML(): string {
           </div>
         </div>
         <button id="btn-tts-toggle" onclick="toggleTTS()"
-          class="w-12 h-12 rounded-full bg-navy-700 border border-gold-500/40 flex items-center justify-center hover:border-gold-500/40 transition-all flex-shrink-0"
-          title="音声読み上げ ON/OFF">
-          <i id="tts-icon" class="fas fa-volume-up text-gold-400"></i>
+          class="h-12 rounded-full bg-navy-700 border border-gold-500/40 flex items-center justify-center gap-1.5 hover:border-gold-400 transition-all flex-shrink-0 px-3"
+          title="チャット時の自動再生 ON/OFF">
+          <i id="tts-icon" class="fas fa-volume-up text-gold-400 text-sm"></i>
+          <span id="tts-label" class="text-xs text-gold-400 whitespace-nowrap">自動再生 ON</span>
         </button>
         <button id="btn-send" onclick="sendMessage()"
           class="w-12 h-12 rounded-full bg-gold-500 flex items-center justify-center hover:bg-gold-400 transition-colors flex-shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
