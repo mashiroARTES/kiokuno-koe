@@ -135,7 +135,7 @@ ${memoryContext}
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: 'speech-02-turbo',
+          model: 'speech-2.8-turbo',
           text: aiReplyText,
           stream: false,
           voice_setting: {
