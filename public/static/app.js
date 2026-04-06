@@ -581,6 +581,10 @@ async function renameSession(sessionId, newTitle) {
 
 // セッションを選択して履歴を表示
 async function selectSession(sessionId) {
+  // 再生中の音声を先に停止してからDOMを切り替える
+  // （DOM削除後にonended/onpauseが発火してもボタン参照エラーにならないようにする）
+  _stopCurrent()
+
   state.currentSessionId = sessionId
   renderSessionList()
   updateSessionControls()
@@ -957,7 +961,9 @@ function playAudio(audioRef, btn) {
     audio.play().catch(e => {
       console.error('Audio play failed:', e)
       _stopCurrent()
-      if (e.name !== 'NotAllowedError') {
+      // NotAllowedError: autoplay policy（ユーザー操作なし）→ 無視
+      // AbortError: 再生中断（会話切替など）→ 無視
+      if (e.name !== 'NotAllowedError' && e.name !== 'AbortError') {
         showToast('再生に失敗しました: ' + e.message, 'error')
       }
     })
