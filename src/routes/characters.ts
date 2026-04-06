@@ -52,7 +52,10 @@ characters.post('/', async (c) => {
 characters.put('/:id', async (c) => {
   const id = c.req.param('id')
   const body = await c.req.json()
-  const { name, age, birthplace, description } = body
+  const { name, age, birthplace, description, voice_id } = body
+
+  // voice_id は空文字列でクリア可能にするため、undefined かどうかで判定
+  const voiceIdValue = voice_id !== undefined ? (voice_id || null) : undefined
 
   await c.env.DB.prepare(
     `UPDATE characters SET 
@@ -60,9 +63,37 @@ characters.put('/:id', async (c) => {
       age = COALESCE(?, age),
       birthplace = COALESCE(?, birthplace),
       description = COALESCE(?, description),
+      voice_id = CASE WHEN ? IS NOT NULL THEN ? ELSE voice_id END,
       updated_at = CURRENT_TIMESTAMP
     WHERE id = ?`
-  ).bind(name || null, age || null, birthplace || null, description || null, id).run()
+  ).bind(
+    name || null,
+    age || null,
+    birthplace || null,
+    description || null,
+    voiceIdValue !== undefined ? voiceIdValue : null,
+    voiceIdValue !== undefined ? voiceIdValue : null,
+    id
+  ).run()
+
+  const updated = await c.env.DB.prepare(
+    'SELECT * FROM characters WHERE id = ?'
+  ).bind(id).first()
+
+  return c.json({ success: true, data: updated })
+})
+
+// Voice ID 設定（プリセット選択・直接入力・クリア）
+// PUT /api/characters/:id/voice
+// body: { voice_id }  ← 空文字列でクリア
+characters.put('/:id/voice', async (c) => {
+  const id = c.req.param('id')
+  const body = await c.req.json()
+  const { voice_id } = body  // 空文字列 '' → null でクリア
+
+  await c.env.DB.prepare(
+    `UPDATE characters SET voice_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+  ).bind(voice_id || null, id).run()
 
   const updated = await c.env.DB.prepare(
     'SELECT * FROM characters WHERE id = ?'

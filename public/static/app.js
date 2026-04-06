@@ -108,9 +108,7 @@ async function selectCharacter(charId) {
   ].filter(Boolean).join(' · ')
   document.getElementById('char-avatar').textContent = char.age > 70 ? '👵' : '👩'
 
-  const voiceBadge = document.getElementById('voice-badge')
-  if (char.voice_id) voiceBadge.classList.remove('hidden')
-  else voiceBadge.classList.add('hidden')
+  updateVoiceBadge(char)
 
   // ツールボタン有効化
   const btnIds = ['btn-add-memory','btn-voice-clone','btn-export','btn-script','btn-inf-script','btn-clear-history']
@@ -530,7 +528,156 @@ async function transcribeAudio(audioBlob) {
   }
 }
 
-// ── ボイスクローン ────────────────────────────────────────
+// ── 声設定 ────────────────────────────────────────────────
+
+// MiniMax 標準ボイス一覧
+const PRESET_VOICES = [
+  { id: 'Wise_Woman',      name: '知恵ある女性',   gender: 'female',  desc: '落ち着いた知恵ある女性の声' },
+  { id: 'Gentle_Man',      name: '穏やかな男性',   gender: 'male',    desc: '温かい穏やかな男性の声' },
+  { id: 'Warm_Woman',      name: '温かな女性',     gender: 'female',  desc: '温もりある母性的な声' },
+  { id: 'Deep_Voice_Man',  name: '渋い男性',       gender: 'male',    desc: '落ち着きのある渋い声' },
+  { id: 'Caring_Lady',     name: '優しい女性',     gender: 'female',  desc: '世話好きな心の温かい声' },
+  { id: 'Friendly_Person', name: '親しみやすい',   gender: 'neutral', desc: '親しみやすい中性的な声' },
+  { id: 'Narrator',        name: 'ナレーター',     gender: 'neutral', desc: '滑らかなナレーション向きの声' },
+]
+
+// ボイスバッジを更新
+function updateVoiceBadge(char) {
+  const badge = document.getElementById('voice-badge')
+  const badgeText = document.getElementById('voice-badge-text')
+  if (char && char.voice_id) {
+    badge.classList.remove('hidden')
+    const preset = PRESET_VOICES.find(v => v.id === char.voice_id)
+    badgeText.textContent = preset ? preset.name : char.voice_id
+  } else {
+    badge.classList.add('hidden')
+  }
+}
+
+// 声設定モーダルを開く
+function openVoiceModal() {
+  if (!state.selectedCharId) return showToast('キャラクターを選択してください', 'error')
+  const char = state.characters.find(c => c.id === state.selectedCharId)
+
+  // 現在のVoice IDを表示
+  const display = document.getElementById('current-voice-display')
+  if (char && char.voice_id) {
+    const preset = PRESET_VOICES.find(v => v.id === char.voice_id)
+    display.textContent = preset ? preset.name + ' (' + char.voice_id + ')' : char.voice_id
+  } else {
+    display.textContent = '未設定'
+  }
+
+  // カスタム入力欄に現在値をセット
+  const customInput = document.getElementById('custom-voice-id-input')
+  if (customInput && char) customInput.value = char.voice_id || ''
+
+  // プリセットリストをレンダリング
+  renderPresetVoiceList(char ? char.voice_id : null)
+
+  // プリセットタブをデフォルトで開く
+  switchVoiceTab('preset')
+  openModal('modal-voice-clone')
+}
+
+// プリセットボイスリストを表示
+function renderPresetVoiceList(currentVoiceId) {
+  const container = document.getElementById('preset-voice-list')
+  container.innerHTML = PRESET_VOICES.map(v => {
+    const isSelected = v.id === currentVoiceId
+    const borderCls = isSelected
+      ? 'border-gold-500/80 bg-gold-500/10'
+      : 'border-white/10 bg-navy-900/50 hover:border-gold-500/40'
+    const checkIcon = isSelected
+      ? '<i class="fas fa-check-circle text-gold-400 text-sm"></i>'
+      : '<i class="far fa-circle text-gray-600 text-sm"></i>'
+    const genderBadge = `<span class="text-xs px-1.5 py-0.5 rounded bg-white/10 text-gray-400">${v.gender}</span>`
+    return `<div class="flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all ${borderCls}"
+        onclick="selectPresetVoice('${v.id}')">
+      ${checkIcon}
+      <div class="flex-1">
+        <div class="text-sm font-medium text-white">${v.name} ${genderBadge}</div>
+        <div class="text-xs text-gray-400 mt-0.5">${v.desc}</div>
+        <div class="text-xs font-mono text-gray-500 mt-0.5">${v.id}</div>
+      </div>
+    </div>`
+  }).join('')
+}
+
+// プリセットボイスを選択して即座に保存
+async function selectPresetVoice(voiceId) {
+  if (!state.selectedCharId) return
+  await applyVoiceId(voiceId)
+}
+
+// カスタム入力のVoice IDを保存
+async function saveCustomVoiceId() {
+  const input = document.getElementById('custom-voice-id-input')
+  const voiceId = input ? input.value.trim() : ''
+  if (!voiceId) return showToast('Voice IDを入力してください', 'error')
+  await applyVoiceId(voiceId)
+}
+
+// Voice IDをキャラクターに適用
+async function applyVoiceId(voiceId) {
+  if (!state.selectedCharId) return
+  try {
+    const data = await api.put('/api/characters/' + state.selectedCharId + '/voice', { voice_id: voiceId })
+    if (data.success) {
+      const idx = state.characters.findIndex(c => c.id === state.selectedCharId)
+      if (idx >= 0) state.characters[idx] = data.data
+      const char = data.data
+      updateVoiceBadge(char)
+      // モーダル内の表示も更新
+      const preset = PRESET_VOICES.find(v => v.id === voiceId)
+      const display = document.getElementById('current-voice-display')
+      display.textContent = preset ? preset.name + ' (' + voiceId + ')' : voiceId
+      renderPresetVoiceList(voiceId)
+      showToast('声を「' + (preset ? preset.name : voiceId) + '」に設定しました', 'success')
+      closeModal('modal-voice-clone')
+    } else {
+      showToast(data.error || '保存に失敗しました', 'error')
+    }
+  } catch(e) {
+    showToast('通信エラー: ' + e.message, 'error')
+  }
+}
+
+// Voice IDをクリア
+async function clearVoiceId() {
+  if (!state.selectedCharId) return
+  if (!confirm('声設定をクリアしますか？')) return
+  try {
+    const data = await api.put('/api/characters/' + state.selectedCharId + '/voice', { voice_id: '' })
+    if (data.success) {
+      const idx = state.characters.findIndex(c => c.id === state.selectedCharId)
+      if (idx >= 0) state.characters[idx] = data.data
+      updateVoiceBadge(data.data)
+      document.getElementById('current-voice-display').textContent = '未設定'
+      renderPresetVoiceList(null)
+      showToast('声設定をクリアしました', 'info')
+    }
+  } catch(e) {
+    showToast('エラー: ' + e.message, 'error')
+  }
+}
+
+// 声設定モーダル内タブ切り替え
+function switchVoiceTab(tab) {
+  const tabs = ['preset', 'custom', 'clone']
+  tabs.forEach(t => {
+    document.getElementById('vpanel-' + t).classList.toggle('hidden', t !== tab)
+    const tabEl = document.getElementById('vtab-' + t)
+    if (t === tab) {
+      tabEl.classList.add('vtab-active')
+      tabEl.classList.remove('text-gray-400')
+    } else {
+      tabEl.classList.remove('vtab-active')
+      tabEl.classList.add('text-gray-400')
+    }
+  })
+}
+
 function onVoiceFileSelected(input) {
   const file = input.files[0]
   if (file) document.getElementById('voice-file-label').textContent = file.name
@@ -556,9 +703,14 @@ async function startVoiceClone() {
     const response = await fetch('/api/minimax/voice-clone-upload', { method: 'POST', body: formData })
     const data = await response.json()
     if (data.success) {
+      // クローン成功: voice_id をキャラクターに自動適用
+      const idx = state.characters.findIndex(c => c.id === state.selectedCharId)
+      if (idx >= 0 && data.data && data.data.voice_id) {
+        state.characters[idx].voice_id = data.data.voice_id
+        updateVoiceBadge(state.characters[idx])
+      }
       closeModal('modal-voice-clone')
       showToast('ボイスクローンが完了しました！', 'success')
-      document.getElementById('voice-badge').classList.remove('hidden')
       await loadCharacters()
     } else {
       showToast(data.error || 'クローン失敗', 'error')

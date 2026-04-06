@@ -146,6 +146,7 @@ function getIndexHTML(): string {
     @keyframes pulse-red { 0%,100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.4); } 50% { box-shadow: 0 0 0 10px rgba(239,68,68,0); } }
     .modal-overlay { background: rgba(15,26,46,0.85); backdrop-filter: blur(4px); }
     .tab-active { border-bottom: 2px solid #d4a853; color: #d4a853; }
+    .vtab-active { border-bottom: 2px solid #d4a853; color: #d4a853; }
     input, textarea, select { font-family: 'Noto Sans JP', sans-serif; }
   </style>
 </head>
@@ -216,13 +217,13 @@ function getIndexHTML(): string {
 
     <!-- ツールタブ -->
     <div id="panel-tools" class="flex-1 overflow-y-auto scrollbar-thin p-3 space-y-3 hidden">
-      <div class="text-xs text-gray-400 uppercase tracking-wider mb-2">音声クローン</div>
-      <button onclick="openModal('modal-voice-clone')" id="btn-voice-clone" disabled
+      <div class="text-xs text-gray-400 uppercase tracking-wider mb-2">声の設定</div>
+      <button onclick="openVoiceModal()" id="btn-voice-clone" disabled
         class="w-full py-2.5 px-3 rounded-lg bg-navy-700 border border-white/10 text-sm hover:border-gold-500/40 transition-colors flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed">
         <i class="fas fa-microphone-alt text-gold-400"></i>
         <div class="text-left">
-          <div class="text-white text-xs font-medium">ボイスクローン</div>
-          <div class="text-gray-400 text-xs">音声サンプルから声を複製</div>
+          <div class="text-white text-xs font-medium">声を設定する</div>
+          <div class="text-gray-400 text-xs">プリセット・ID入力・クローン</div>
         </div>
       </button>
 
@@ -276,8 +277,8 @@ function getIndexHTML(): string {
             <p id="char-desc" class="text-xs text-gray-400"></p>
           </div>
         </div>
-        <div id="voice-badge" class="hidden text-xs px-3 py-1 rounded-full bg-gold-500/20 border border-gold-500/40 text-gold-400">
-          <i class="fas fa-waveform-lines mr-1"></i>声複製済み
+        <div id="voice-badge" class="hidden text-xs px-3 py-1 rounded-full bg-gold-500/20 border border-gold-500/40 text-gold-400 cursor-pointer hover:bg-gold-500/30 transition-colors" onclick="openModal('modal-voice-clone')" title="声の設定を変更">
+          <i class="fas fa-microphone-alt mr-1"></i><span id="voice-badge-text">声設定済み</span>
         </div>
       </div>
     </div>
@@ -469,35 +470,93 @@ function getIndexHTML(): string {
   </div>
 </div>
 
-<!-- ボイスクローン -->
+<!-- 声設定モーダル（プリセット / Voice ID直接入力 / ボイスクローン） -->
 <div id="modal-voice-clone" class="hidden fixed inset-0 modal-overlay z-50 flex items-center justify-center p-4">
-  <div class="bg-navy-800 rounded-2xl border border-white/20 w-full max-w-md shadow-2xl">
+  <div class="bg-navy-800 rounded-2xl border border-white/20 w-full max-w-lg shadow-2xl">
     <div class="flex items-center justify-between p-5 border-b border-white/10">
-      <h3 class="font-serif-jp text-gold-400 font-semibold text-lg">ボイスクローン</h3>
+      <h3 class="font-serif-jp text-gold-400 font-semibold text-lg"><i class="fas fa-microphone-alt mr-2 text-base"></i>声の設定</h3>
       <button onclick="closeModal('modal-voice-clone')" class="text-gray-400 hover:text-white"><i class="fas fa-times"></i></button>
     </div>
-    <div class="p-5 space-y-4">
-      <div class="bg-blue-500/10 border border-blue-500/30 rounded-lg p-3 text-xs text-blue-300">
+
+    <!-- 現在の設定表示 -->
+    <div class="px-5 pt-4 pb-0">
+      <div class="flex items-center gap-2 bg-navy-900/60 rounded-lg px-3 py-2 text-xs text-gray-400 border border-white/10">
+        <i class="fas fa-info-circle text-gold-400"></i>
+        現在のVoice ID:
+        <span id="current-voice-display" class="text-gold-300 font-mono ml-1">未設定</span>
+        <button onclick="clearVoiceId()" class="ml-auto text-red-400 hover:text-red-300 text-xs" title="声設定をクリア">
+          <i class="fas fa-times-circle mr-1"></i>クリア
+        </button>
+      </div>
+    </div>
+
+    <!-- タブ -->
+    <div class="flex border-b border-white/10 mx-5 mt-4">
+      <button onclick="switchVoiceTab('preset')" id="vtab-preset"
+        class="flex-1 py-2.5 text-xs font-medium vtab-active transition-colors">
+        <i class="fas fa-list mr-1"></i>プリセット
+      </button>
+      <button onclick="switchVoiceTab('custom')" id="vtab-custom"
+        class="flex-1 py-2.5 text-xs font-medium text-gray-400 hover:text-white transition-colors">
+        <i class="fas fa-keyboard mr-1"></i>ID直接入力
+      </button>
+      <button onclick="switchVoiceTab('clone')" id="vtab-clone"
+        class="flex-1 py-2.5 text-xs font-medium text-gray-400 hover:text-white transition-colors">
+        <i class="fas fa-clone mr-1"></i>ボイスクローン
+      </button>
+    </div>
+
+    <!-- プリセット選択パネル -->
+    <div id="vpanel-preset" class="p-5">
+      <p class="text-xs text-gray-400 mb-3">MiniMax標準ボイスから選択してください。</p>
+      <div id="preset-voice-list" class="grid grid-cols-1 gap-2">
+        <!-- JS で生成 -->
+      </div>
+    </div>
+
+    <!-- Voice ID 直接入力パネル -->
+    <div id="vpanel-custom" class="p-5 hidden">
+      <p class="text-xs text-gray-400 mb-3">
+        MiniMaxのVoice IDを直接入力します。プリセットID（例: <code class="text-gold-300">Wise_Woman</code>）やクローン済みID（例: <code class="text-gold-300">clone_1_...</code>）が使用できます。
+      </p>
+      <div>
+        <label class="block text-xs text-gray-400 mb-1">Voice ID <span class="text-red-400">*</span></label>
+        <input id="custom-voice-id-input" type="text" placeholder="例: Wise_Woman  /  clone_1_1234567890"
+          class="w-full bg-navy-900 border border-white/20 rounded-lg px-3 py-2.5 text-sm text-white font-mono focus:outline-none focus:border-gold-500/50 placeholder-gray-600">
+      </div>
+      <div class="mt-4 flex gap-3">
+        <button onclick="closeModal('modal-voice-clone')"
+          class="flex-1 py-2 rounded-lg border border-white/20 text-sm text-gray-400 hover:text-white transition-colors">キャンセル</button>
+        <button onclick="saveCustomVoiceId()"
+          class="flex-1 py-2 rounded-lg bg-gold-500 text-navy-900 text-sm font-semibold hover:bg-gold-400 transition-colors">
+          <i class="fas fa-save mr-1"></i>保存する
+        </button>
+      </div>
+    </div>
+
+    <!-- ボイスクローンパネル -->
+    <div id="vpanel-clone" class="p-5 hidden">
+      <div class="bg-blue-500/10 border border-blue-500/30 rounded-lg p-3 text-xs text-blue-300 mb-4">
         <i class="fas fa-info-circle mr-1"></i>
-        10〜60秒以上の音声サンプル（mp3/wav/m4a）をアップロードすると、その声色を再現します。
+        10〜60秒以上の音声サンプル（MP3/WAV/M4A）をアップロードすると、その声色を再現したVoice IDが自動生成・設定されます。
       </div>
       <div>
         <label class="block text-xs text-gray-400 mb-1">音声サンプルファイル <span class="text-red-400">*</span></label>
-        <label class="w-full flex flex-col items-center justify-center py-8 border-2 border-dashed border-white/20 rounded-xl cursor-pointer hover:border-gold-500/40 transition-colors">
+        <label class="w-full flex flex-col items-center justify-center py-6 border-2 border-dashed border-white/20 rounded-xl cursor-pointer hover:border-gold-500/40 transition-colors">
           <i class="fas fa-cloud-upload-alt text-3xl text-gray-500 mb-2"></i>
           <span class="text-sm text-gray-400" id="voice-file-label">クリックしてファイルを選択</span>
-          <span class="text-xs text-gray-600 mt-1">MP3, WAV, M4A (最大50MB)</span>
+          <span class="text-xs text-gray-600 mt-1">MP3, WAV, M4A（最大50MB）</span>
           <input type="file" id="voice-file-input" accept="audio/*" class="hidden" onchange="onVoiceFileSelected(this)">
         </label>
       </div>
-    </div>
-    <div class="flex gap-3 p-5 pt-0">
-      <button onclick="closeModal('modal-voice-clone')"
-        class="flex-1 py-2 rounded-lg border border-white/20 text-sm text-gray-400 hover:text-white transition-colors">キャンセル</button>
-      <button onclick="startVoiceClone()" id="btn-clone-start"
-        class="flex-1 py-2 rounded-lg bg-gold-500 text-navy-900 text-sm font-semibold hover:bg-gold-400 transition-colors flex items-center justify-center gap-2">
-        <i class="fas fa-microphone-alt"></i> クローン開始
-      </button>
+      <div class="mt-4 flex gap-3">
+        <button onclick="closeModal('modal-voice-clone')"
+          class="flex-1 py-2 rounded-lg border border-white/20 text-sm text-gray-400 hover:text-white transition-colors">キャンセル</button>
+        <button onclick="startVoiceClone()" id="btn-clone-start"
+          class="flex-1 py-2 rounded-lg bg-gold-500 text-navy-900 text-sm font-semibold hover:bg-gold-400 transition-colors flex items-center justify-center gap-2">
+          <i class="fas fa-microphone-alt"></i>クローン開始
+        </button>
+      </div>
     </div>
   </div>
 </div>
