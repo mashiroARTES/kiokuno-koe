@@ -7,6 +7,45 @@ function storeAudio(hex) {
   return id
 }
 
+// ── 現在の再生状態管理（同時に1つのみ・一時停止/続きから再開）──
+let currentAudio = {
+  instance: null,   // Audio インスタンス
+  audioRef: null,   // 再生中の audioStore キー
+  btn: null,        // 再生中のボタン DOM 要素
+  url: null,        // createObjectURL URL（revoke用）
+}
+
+function _resetPlayBtn(btn) {
+  if (!btn) return
+  btn.innerHTML = '<i class="fas fa-play text-xs"></i> 再生'
+  btn.className = 'flex items-center gap-1.5 text-xs text-gold-400 hover:text-gold-300 transition-colors bg-gold-500/10 border border-gold-500/30 rounded-full px-3 py-1'
+}
+function _setPauseBtn(btn) {
+  if (!btn) return
+  btn.innerHTML = '<i class="fas fa-pause text-xs"></i> 一時停止'
+  btn.className = 'flex items-center gap-1.5 text-xs text-yellow-400 hover:text-yellow-300 transition-colors bg-yellow-500/10 border border-yellow-500/40 rounded-full px-3 py-1'
+}
+function _setResumeBtn(btn) {
+  if (!btn) return
+  btn.innerHTML = '<i class="fas fa-play text-xs"></i> 続きから'
+  btn.className = 'flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 transition-colors bg-blue-500/10 border border-blue-500/40 rounded-full px-3 py-1'
+}
+function _stopCurrent() {
+  if (currentAudio.instance) {
+    currentAudio.instance.onplay = null
+    currentAudio.instance.onpause = null
+    currentAudio.instance.onended = null
+    currentAudio.instance.pause()
+    currentAudio.instance.src = ''
+  }
+  if (currentAudio.url) URL.revokeObjectURL(currentAudio.url)
+  _resetPlayBtn(currentAudio.btn)
+  currentAudio.instance = null
+  currentAudio.audioRef = null
+  currentAudio.btn = null
+  currentAudio.url = null
+}
+
 // ── 状態管理 ──────────────────────────────────────────────
 let state = {
   characters: [],
@@ -492,7 +531,7 @@ function appendMessage(role, content, audioHex, scroll, messageId) {
       // Hexをstoreに保存してキーをonclickに渡す（大量データをHTML属性に入れない）
       audioStoreKey = storeAudio(audioHex)
       audioBtn = `<div class="msg-audio-area mt-2 flex items-center gap-2">
-        <button onclick="playAudio('${audioStoreKey}')"
+        <button onclick="playAudio('${audioStoreKey}', this)"
           class="flex items-center gap-1.5 text-xs text-gold-400 hover:text-gold-300 transition-colors bg-gold-500/10 border border-gold-500/30 rounded-full px-3 py-1">
           <i class="fas fa-play text-xs"></i> 再生
         </button>
@@ -525,8 +564,11 @@ function appendMessage(role, content, audioHex, scroll, messageId) {
   if (scroll) scrollToBottom()
 
   // 自動再生フラグが ON かつ audioHex がある場合のみ自動再生
-  // （再生ボタン自体は ttsEnabled に関わらず常に表示される）
-  if (audioStoreKey && state.ttsEnabled) playAudio(audioStoreKey)
+  // ボタン要素を渡してUI同期させる（再生ボタン自体は ttsEnabled に関わらず常に表示）
+  if (audioStoreKey && state.ttsEnabled) {
+    const autoBtn = div.querySelector('.msg-audio-area button')
+    playAudio(audioStoreKey, autoBtn || null)
+  }
   return div
 }
 
@@ -547,12 +589,12 @@ async function generateTtsForMessage(messageId, btn) {
       const key = storeAudio(data.data.audio_hex)
       // ボタン領域を「再生」に切り替え
       const area = btn.closest('.msg-audio-area')
-      area.innerHTML = `<button onclick="playAudio('${key}')"
+      area.innerHTML = `<button onclick="playAudio('${key}', this)"
         class="flex items-center gap-1.5 text-xs text-gold-400 hover:text-gold-300 transition-colors bg-gold-500/10 border border-gold-500/30 rounded-full px-3 py-1">
         <i class="fas fa-play text-xs"></i> 再生
       </button>`
-      // 即座に再生
-      playAudio(key)
+      // 生成直後に再生（btnは生成されたばかりのDOM要素を取得）
+      playAudio(key, area.querySelector('button'))
     } else {
       btn.disabled = false
       btn.innerHTML = origHTML
@@ -591,16 +633,32 @@ function setLoading(val) {
   document.getElementById('chat-input').disabled = val
 }
 
-// ── TTS 音声再生 ──────────────────────────────────────────
-// audioRef: audioStoreのキー('aud_xxx') または直接のHex文字列（後方互換）
-function playAudio(audioRef) {
+// ── TTS 音声再生（シングルトン・一時停止/続きから再開対応）──
+// audioRef : audioStore キー
+// btn      : クリックされたボタン要素（null = 自動再生などUIなし）
+function playAudio(audioRef, btn) {
   try {
-    // storeキーならストアから取得、そうでなければ直接Hexとして扱う
+    // ── 同じ音声のボタンを再度押した場合：一時停止 ↔ 続きから ──
+    if (currentAudio.audioRef === audioRef && currentAudio.instance) {
+      const inst = currentAudio.instance
+      if (btn) currentAudio.btn = btn   // ボタン参照を最新化
+      if (!inst.paused) {
+        inst.pause()                     // 再生中 → 一時停止
+      } else {
+        inst.play().catch(e => console.error('resume failed:', e))  // 停止中 → 続きから
+      }
+      return
+    }
+
+    // ── 別の音声または初回：現在再生中のものを停めて新規開始 ──
+    _stopCurrent()
+
     const hex = audioStore[audioRef] || audioRef
     if (!hex || hex.length < 4) {
       showToast('音声データがありません', 'error')
       return
     }
+
     // Hex → Uint8Array 高速変換
     const len = Math.floor(hex.length / 2)
     const bytes = new Uint8Array(len)
@@ -610,16 +668,40 @@ function playAudio(audioRef) {
     const blob = new Blob([bytes], { type: 'audio/mpeg' })
     const url = URL.createObjectURL(blob)
     const audio = new Audio(url)
+
+    // currentAudio に登録
+    currentAudio.instance = audio
+    currentAudio.audioRef = audioRef
+    currentAudio.btn = btn || null
+    currentAudio.url = url
+
+    // イベントハンドラ：ボタンUIを同期
+    audio.onplay  = () => _setPauseBtn(currentAudio.btn)
+    audio.onpause = () => {
+      if (!audio.ended) _setResumeBtn(currentAudio.btn)
+    }
+    audio.onended = () => {
+      URL.revokeObjectURL(url)
+      _resetPlayBtn(currentAudio.btn)
+      currentAudio.instance = null
+      currentAudio.audioRef = null
+      currentAudio.btn = null
+      currentAudio.url = null
+    }
+
+    // 初回再生前にボタンを「一時停止」表示に先願えしておく
+    if (btn) _setPauseBtn(btn)
+
     audio.play().catch(e => {
       console.error('Audio play failed:', e)
-      // autoplay policy（ユーザー操作なしの自動再生）は黙って無視
+      _stopCurrent()
       if (e.name !== 'NotAllowedError') {
         showToast('再生に失敗しました: ' + e.message, 'error')
       }
     })
-    audio.onended = () => URL.revokeObjectURL(url)
   } catch(e) {
     console.error('Audio play error:', e)
+    _stopCurrent()
     showToast('再生エラー: ' + e.message, 'error')
   }
 }
