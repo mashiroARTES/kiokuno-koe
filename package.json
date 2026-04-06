@@ -1,0 +1,25 @@
+{
+  "name": "kioku-no-koe",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:sandbox": "wrangler pages dev dist --d1=kioku-no-koe-production --local --ip 0.0.0.0 --port 3000",
+    "build": "vite build",
+    "preview": "wrangler pages dev dist",
+    "deploy": "npm run build && wrangler pages deploy dist --project-name kioku-no-koe",
+    "cf-typegen": "wrangler types --env-interface CloudflareBindings",
+    "db:migrate:local": "wrangler d1 migrations apply kioku-no-koe-production --local",
+    "db:seed": "wrangler d1 execute kioku-no-koe-production --local --file=./seed.sql",
+    "db:reset": "rm -rf .wrangler/state/v3/d1 && npm run db:migrate:local && npm run db:seed"
+  },
+  "dependencies": {
+    "hono": "^4.12.10"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250705.0",
+    "@hono/vite-build": "^1.2.0",
+    "@hono/vite-dev-server": "^0.18.2",
+    "vite": "^6.3.5",
+    "wrangler": "^4.4.0"
+  }
+}
