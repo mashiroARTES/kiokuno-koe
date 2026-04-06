@@ -1,3 +1,12 @@
+// ── 音声データストア（IDで参照してHexをHTML属性に埋め込まない）──
+const audioStore = {}
+let audioStoreSeq = 0
+function storeAudio(hex) {
+  const id = 'aud_' + (++audioStoreSeq)
+  audioStore[id] = hex
+  return id
+}
+
 // ── 状態管理 ──────────────────────────────────────────────
 let state = {
   characters: [],
@@ -477,11 +486,13 @@ function appendMessage(role, content, audioHex, scroll, messageId) {
 
   // assistant のみ音声ボタンを表示
   let audioBtn = ''
+  let audioStoreKey = null
   if (!isUser) {
     if (audioHex) {
-      // TTS済み: 再生ボタン
+      // Hexをstoreに保存してキーをonclickに渡す（大量データをHTML属性に入れない）
+      audioStoreKey = storeAudio(audioHex)
       audioBtn = `<div class="msg-audio-area mt-2 flex items-center gap-2">
-        <button onclick="playAudio('${audioHex}')"
+        <button onclick="playAudio('${audioStoreKey}')"
           class="flex items-center gap-1.5 text-xs text-gold-400 hover:text-gold-300 transition-colors bg-gold-500/10 border border-gold-500/30 rounded-full px-3 py-1">
           <i class="fas fa-play text-xs"></i> 再生
         </button>
@@ -515,7 +526,7 @@ function appendMessage(role, content, audioHex, scroll, messageId) {
 
   // 自動再生フラグが ON かつ audioHex がある場合のみ自動再生
   // （再生ボタン自体は ttsEnabled に関わらず常に表示される）
-  if (audioHex && state.ttsEnabled) playAudio(audioHex)
+  if (audioStoreKey && state.ttsEnabled) playAudio(audioStoreKey)
   return div
 }
 
@@ -533,15 +544,15 @@ async function generateTtsForMessage(messageId, btn) {
     })
 
     if (data.success && data.data.audio_hex) {
-      const audioHex = data.data.audio_hex
+      const key = storeAudio(data.data.audio_hex)
       // ボタン領域を「再生」に切り替え
       const area = btn.closest('.msg-audio-area')
-      area.innerHTML = `<button onclick="playAudio('${audioHex}')"
+      area.innerHTML = `<button onclick="playAudio('${key}')"
         class="flex items-center gap-1.5 text-xs text-gold-400 hover:text-gold-300 transition-colors bg-gold-500/10 border border-gold-500/30 rounded-full px-3 py-1">
         <i class="fas fa-play text-xs"></i> 再生
       </button>`
       // 即座に再生
-      playAudio(audioHex)
+      playAudio(key)
     } else {
       btn.disabled = false
       btn.innerHTML = origHTML
@@ -581,19 +592,35 @@ function setLoading(val) {
 }
 
 // ── TTS 音声再生 ──────────────────────────────────────────
-function playAudio(audioHex) {
+// audioRef: audioStoreのキー('aud_xxx') または直接のHex文字列（後方互換）
+function playAudio(audioRef) {
   try {
-    const bytes = new Uint8Array(audioHex.length / 2)
-    for (let i = 0; i < audioHex.length; i += 2) {
-      bytes[i / 2] = parseInt(audioHex.substr(i, 2), 16)
+    // storeキーならストアから取得、そうでなければ直接Hexとして扱う
+    const hex = audioStore[audioRef] || audioRef
+    if (!hex || hex.length < 4) {
+      showToast('音声データがありません', 'error')
+      return
+    }
+    // Hex → Uint8Array 高速変換
+    const len = Math.floor(hex.length / 2)
+    const bytes = new Uint8Array(len)
+    for (let i = 0; i < len; i++) {
+      bytes[i] = (parseInt(hex[i * 2], 16) << 4) | parseInt(hex[i * 2 + 1], 16)
     }
     const blob = new Blob([bytes], { type: 'audio/mpeg' })
     const url = URL.createObjectURL(blob)
     const audio = new Audio(url)
-    audio.play()
+    audio.play().catch(e => {
+      console.error('Audio play failed:', e)
+      // autoplay policy（ユーザー操作なしの自動再生）は黙って無視
+      if (e.name !== 'NotAllowedError') {
+        showToast('再生に失敗しました: ' + e.message, 'error')
+      }
+    })
     audio.onended = () => URL.revokeObjectURL(url)
   } catch(e) {
     console.error('Audio play error:', e)
+    showToast('再生エラー: ' + e.message, 'error')
   }
 }
 

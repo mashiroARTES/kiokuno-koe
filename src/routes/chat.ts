@@ -151,7 +151,7 @@ ${memoryContext}
             speed: 0.85,
             vol: 1.0,
             pitch: 0,
-            emotion: 'nostalgic',
+            emotion: 'neutral',
           },
           audio_setting: {
             sample_rate: 32000,
@@ -166,7 +166,12 @@ ${memoryContext}
         const ttsData: any = await ttsResponse.json()
         if (ttsData.base_resp?.status_code === 0) {
           audioHex = ttsData.data?.audio || null
+        } else {
+          console.error('TTS status error:', ttsData.base_resp)
         }
+      } else {
+        const errBody = await ttsResponse.text()
+        console.error('TTS HTTP error:', ttsResponse.status, errBody)
       }
     } catch (ttsErr) {
       console.error('TTS error (non-fatal):', ttsErr)

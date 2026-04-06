@@ -350,7 +350,7 @@ minimax.post('/tts-for-message', async (c) => {
           speed: 0.85,
           vol: 1.0,
           pitch: 0,
-          emotion: 'nostalgic',
+          emotion: 'neutral',
         },
         audio_setting: {
           sample_rate: 32000,
