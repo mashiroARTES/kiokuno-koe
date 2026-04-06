@@ -274,7 +274,8 @@ async function loadChatHistory(characterId) {
   const messages = data.data || []
   const chatArea = document.getElementById('chat-area')
   chatArea.innerHTML = ''
-  messages.forEach(m => appendMessage(m.role, m.content, null, false))
+  // 履歴読み込み: message_id と audio_hex を渡す
+  messages.forEach(m => appendMessage(m.role, m.content, m.audio_hex || null, false, m.id))
   scrollToBottom()
 }
 
@@ -302,7 +303,8 @@ async function sendMessage() {
     thinkingEl.remove()
 
     if (data.success) {
-      appendMessage('assistant', data.data.reply, data.data.audio_hex)
+      // message_id を渡して再生ボタンに結び付ける
+      appendMessage('assistant', data.data.reply, data.data.audio_hex, true, data.data.message_id)
     } else {
       appendMessage('assistant', '⚠️ ' + (data.error || 'エラーが発生しました'))
     }
@@ -314,7 +316,7 @@ async function sendMessage() {
   }
 }
 
-function appendMessage(role, content, audioHex, scroll) {
+function appendMessage(role, content, audioHex, scroll, messageId) {
   if (scroll === undefined) scroll = true
   const chatArea = document.getElementById('chat-area')
   const isUser = role === 'user'
@@ -329,17 +331,31 @@ function appendMessage(role, content, audioHex, scroll) {
   const labelName = isUser ? 'あなた' : charName
   const avatarClass = isUser ? 'bg-blue-500/30' : 'bg-gold-500/20 border border-gold-500/30'
 
-  const audioBtn = audioHex
-    ? `<div class="mt-2 flex items-center gap-2">
+  // assistant のみ音声ボタンを表示
+  let audioBtn = ''
+  if (!isUser) {
+    if (audioHex) {
+      // TTS済み: 再生ボタン
+      audioBtn = `<div class="msg-audio-area mt-2 flex items-center gap-2">
         <button onclick="playAudio('${audioHex}')"
           class="flex items-center gap-1.5 text-xs text-gold-400 hover:text-gold-300 transition-colors bg-gold-500/10 border border-gold-500/30 rounded-full px-3 py-1">
           <i class="fas fa-play text-xs"></i> 再生
         </button>
       </div>`
-    : ''
+    } else if (messageId) {
+      // 未生成: 「音声を生成」ボタン
+      audioBtn = `<div class="msg-audio-area mt-2 flex items-center gap-2">
+        <button id="tts-btn-${messageId}" onclick="generateTtsForMessage(${messageId}, this)"
+          class="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gold-400 transition-colors bg-white/5 hover:bg-gold-500/10 border border-white/20 hover:border-gold-500/30 rounded-full px-3 py-1">
+          <i class="fas fa-volume-up text-xs"></i> 音声を生成
+        </button>
+      </div>`
+    }
+  }
 
   const div = document.createElement('div')
   div.className = 'flex gap-3 ' + (isUser ? 'flex-row-reverse' : 'flex-row')
+  if (messageId) div.dataset.messageId = messageId
   div.innerHTML = `
     <div class="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-sm ${avatarClass}">${emoji}</div>
     <div class="max-w-[75%]">
@@ -355,6 +371,41 @@ function appendMessage(role, content, audioHex, scroll) {
 
   if (audioHex && state.ttsEnabled) playAudio(audioHex)
   return div
+}
+
+// 履歴メッセージを後からTTS変換して再生
+async function generateTtsForMessage(messageId, btn) {
+  if (!state.selectedCharId) return
+  const origHTML = btn.innerHTML
+  btn.disabled = true
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin text-xs"></i> 生成中…'
+
+  try {
+    const data = await api.post('/api/minimax/tts-for-message', {
+      message_id: messageId,
+      character_id: state.selectedCharId,
+    })
+
+    if (data.success && data.data.audio_hex) {
+      const audioHex = data.data.audio_hex
+      // ボタン領域を「再生」に切り替え
+      const area = btn.closest('.msg-audio-area')
+      area.innerHTML = `<button onclick="playAudio('${audioHex}')"
+        class="flex items-center gap-1.5 text-xs text-gold-400 hover:text-gold-300 transition-colors bg-gold-500/10 border border-gold-500/30 rounded-full px-3 py-1">
+        <i class="fas fa-play text-xs"></i> 再生
+      </button>`
+      // 即座に再生
+      playAudio(audioHex)
+    } else {
+      btn.disabled = false
+      btn.innerHTML = origHTML
+      showToast(data.error || 'TTS生成に失敗しました', 'error')
+    }
+  } catch(e) {
+    btn.disabled = false
+    btn.innerHTML = origHTML
+    showToast('通信エラー: ' + e.message, 'error')
+  }
 }
 
 function appendThinking() {

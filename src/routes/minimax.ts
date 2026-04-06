@@ -299,6 +299,92 @@ minimax.get('/voices', async (c) => {
 })
 
 // ─────────────────────────────────────────────
+// 履歴メッセージを後からTTS変換して保存・返却
+// POST /api/minimax/tts-for-message
+// body: { message_id, character_id }
+// ─────────────────────────────────────────────
+minimax.post('/tts-for-message', async (c) => {
+  const apiKey = getApiKey(c)
+  if (!apiKey) return c.json({ success: false, error: 'APIキーが設定されていません' }, 500)
+
+  const body = await c.req.json()
+  const { message_id, character_id } = body
+  if (!message_id || !character_id) {
+    return c.json({ success: false, error: 'message_id と character_id は必須です' }, 400)
+  }
+
+  // メッセージ取得
+  const msg: any = await c.env.DB.prepare(
+    'SELECT * FROM conversations WHERE id = ? AND character_id = ?'
+  ).bind(message_id, character_id).first()
+
+  if (!msg) return c.json({ success: false, error: 'メッセージが見つかりません' }, 404)
+  if (msg.role !== 'assistant') {
+    return c.json({ success: false, error: 'assistant のメッセージのみTTS変換できます' }, 400)
+  }
+
+  // キャッシュ済みならそのまま返す
+  if (msg.audio_hex) {
+    return c.json({ success: true, data: { audio_hex: msg.audio_hex, cached: true } })
+  }
+
+  // キャラクター情報取得（voice_id用）
+  const character: any = await c.env.DB.prepare(
+    'SELECT voice_id FROM characters WHERE id = ?'
+  ).bind(character_id).first()
+  const voiceId = character?.voice_id || 'Wise_Woman'
+
+  try {
+    const ttsResponse = await fetch(`${MINIMAX_BASE_URL}/t2a_v2`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'speech-2.8-turbo',
+        text: msg.content,
+        stream: false,
+        voice_setting: {
+          voice_id: voiceId,
+          speed: 0.85,
+          vol: 1.0,
+          pitch: 0,
+          emotion: 'nostalgic',
+        },
+        audio_setting: {
+          sample_rate: 32000,
+          bitrate: 128000,
+          format: 'mp3',
+          channel: 1,
+        },
+      }),
+    })
+
+    if (!ttsResponse.ok) {
+      const err = await ttsResponse.text()
+      return c.json({ success: false, error: `MiniMax TTS error: ${ttsResponse.status} ${err}` }, 500)
+    }
+
+    const ttsData: any = await ttsResponse.json()
+    if (ttsData.base_resp?.status_code !== 0) {
+      return c.json({ success: false, error: ttsData.base_resp?.status_msg || 'TTS生成失敗' }, 500)
+    }
+
+    const audioHex: string = ttsData.data?.audio || ''
+
+    // DBに保存（キャッシュ）
+    await c.env.DB.prepare(
+      'UPDATE conversations SET audio_hex = ? WHERE id = ?'
+    ).bind(audioHex, message_id).run()
+
+    return c.json({ success: true, data: { audio_hex: audioHex, cached: false } })
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500)
+  }
+})
+
+// ─────────────────────────────────────────────
 // ジョブステータス確認
 // GET /api/minimax/job/:jobId
 // ─────────────────────────────────────────────

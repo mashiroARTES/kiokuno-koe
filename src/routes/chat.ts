@@ -165,10 +165,17 @@ ${memoryContext}
     }
   }
 
-  // AIの返答を会話履歴に保存
-  await c.env.DB.prepare(
-    'INSERT INTO conversations (character_id, role, content) VALUES (?, ?, ?)'
-  ).bind(character_id, 'assistant', aiReplyText).run()
+  // AIの返答を会話履歴に保存（audio_hex も一緒に保存してキャッシュ）
+  const assistantRow = await c.env.DB.prepare(
+    'INSERT INTO conversations (character_id, role, content, audio_hex) VALUES (?, ?, ?, ?)'
+  ).bind(character_id, 'assistant', aiReplyText, audioHex).run()
+  const assistantMsgId = assistantRow.meta.last_row_id
+
+  // ユーザーメッセージのIDも取得（保存は先に済み）
+  const userRow = await c.env.DB.prepare(
+    'SELECT id FROM conversations WHERE character_id = ? AND role = ? ORDER BY created_at DESC LIMIT 1'
+  ).bind(character_id, 'user').first() as any
+  const userMsgId = userRow?.id || null
 
   return c.json({
     success: true,
@@ -176,6 +183,8 @@ ${memoryContext}
       reply: aiReplyText,
       audio_hex: audioHex,
       character_name: character.name,
+      message_id: assistantMsgId,
+      user_message_id: userMsgId,
     }
   })
 })
@@ -234,7 +243,7 @@ chat.get('/history/:characterId', async (c) => {
   const limit = parseInt(c.req.query('limit') || '50')
 
   const { results } = await c.env.DB.prepare(
-    'SELECT * FROM conversations WHERE character_id = ? ORDER BY created_at ASC LIMIT ?'
+    'SELECT id, character_id, role, content, audio_hex, created_at FROM conversations WHERE character_id = ? ORDER BY created_at ASC LIMIT ?'
   ).bind(characterId, limit).all()
 
   return c.json({ success: true, data: results })
