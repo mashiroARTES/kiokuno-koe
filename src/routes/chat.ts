@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { validateSession } from './auth'
 
 type Bindings = {
   DB: D1Database
@@ -9,12 +10,19 @@ const chat = new Hono<{ Bindings: Bindings }>()
 
 const MINIMAX_BASE_URL = 'https://api.minimax.io/v1'
 
+function getToken(c: any): string | undefined {
+  return c.req.header('Authorization')?.replace('Bearer ', '')
+}
+
 // ─────────────────────────────────────────────
 // チャットメッセージ送信
 // POST /api/chat
 // body: { character_id, message, use_tts? }
 // ─────────────────────────────────────────────
 chat.post('/', async (c) => {
+  const user = await validateSession(c.env.DB, getToken(c))
+  if (!user) return c.json({ success: false, error: '認証が必要です' }, 401)
+
   const apiKey = c.env?.MINIMAX_API_KEY || ''
   if (!apiKey) return c.json({ success: false, error: 'APIキーが設定されていません' }, 500)
 
@@ -25,10 +33,10 @@ chat.post('/', async (c) => {
     return c.json({ success: false, error: 'character_id と message は必須です' }, 400)
   }
 
-  // キャラクター情報取得
+  // キャラクター情報取得（所有権確認込み）
   const character: any = await c.env.DB.prepare(
-    'SELECT * FROM characters WHERE id = ?'
-  ).bind(character_id).first()
+    'SELECT * FROM characters WHERE id = ? AND user_id = ?'
+  ).bind(character_id, user.id).first()
 
   if (!character) {
     return c.json({ success: false, error: 'キャラクターが見つかりません' }, 404)
@@ -165,13 +173,12 @@ ${memoryContext}
     }
   }
 
-  // AIの返答を会話履歴に保存（audio_hex も一緒に保存してキャッシュ）
+  // AIの返答を会話履歴に保存
   const assistantRow = await c.env.DB.prepare(
     'INSERT INTO conversations (character_id, role, content, audio_hex) VALUES (?, ?, ?, ?)'
   ).bind(character_id, 'assistant', aiReplyText, audioHex).run()
   const assistantMsgId = assistantRow.meta.last_row_id
 
-  // ユーザーメッセージのIDも取得（保存は先に済み）
   const userRow = await c.env.DB.prepare(
     'SELECT id FROM conversations WHERE character_id = ? AND role = ? ORDER BY created_at DESC LIMIT 1'
   ).bind(character_id, 'user').first() as any
@@ -190,11 +197,12 @@ ${memoryContext}
 })
 
 // ─────────────────────────────────────────────
-// 音声入力 (STT) - ブラウザから音声Blobを受け取りテキスト化
-// POST /api/chat/stt
-// multipart form: audio_file
+// 音声入力 (STT)
 // ─────────────────────────────────────────────
 chat.post('/stt', async (c) => {
+  const user = await validateSession(c.env.DB, getToken(c))
+  if (!user) return c.json({ success: false, error: '認証が必要です' }, 401)
+
   const apiKey = c.env?.MINIMAX_API_KEY || ''
   if (!apiKey) return c.json({ success: false, error: 'APIキーが設定されていません' }, 500)
 
@@ -210,7 +218,6 @@ chat.post('/stt', async (c) => {
     return c.json({ success: false, error: 'audio_file は必須です' }, 400)
   }
 
-  // MiniMax Audio-to-Text API (Whisper互換)
   try {
     const sttForm = new FormData()
     sttForm.append('file', audioFile, audioFile.name || 'speech.webm')
@@ -224,7 +231,6 @@ chat.post('/stt', async (c) => {
     })
 
     if (!sttResponse.ok) {
-      // フォールバック: Web Speech APIでの認識をフロントに返す
       return c.json({ success: false, error: 'STT APIエラー、ブラウザ音声認識をお使いください' }, 500)
     }
 
@@ -239,9 +245,17 @@ chat.post('/stt', async (c) => {
 
 // 会話履歴取得
 chat.get('/history/:characterId', async (c) => {
-  const characterId = c.req.param('characterId')
-  const limit = parseInt(c.req.query('limit') || '50')
+  const user = await validateSession(c.env.DB, getToken(c))
+  if (!user) return c.json({ success: false, error: '認証が必要です' }, 401)
 
+  const characterId = c.req.param('characterId')
+  // 所有権確認
+  const ch = await c.env.DB.prepare(
+    'SELECT id FROM characters WHERE id = ? AND user_id = ?'
+  ).bind(characterId, user.id).first()
+  if (!ch) return c.json({ success: false, error: 'キャラクターが見つかりません' }, 404)
+
+  const limit = parseInt(c.req.query('limit') || '50')
   const { results } = await c.env.DB.prepare(
     'SELECT id, character_id, role, content, audio_hex, created_at FROM conversations WHERE character_id = ? ORDER BY created_at ASC LIMIT ?'
   ).bind(characterId, limit).all()
@@ -251,10 +265,16 @@ chat.get('/history/:characterId', async (c) => {
 
 // 会話履歴クリア
 chat.delete('/history/:characterId', async (c) => {
+  const user = await validateSession(c.env.DB, getToken(c))
+  if (!user) return c.json({ success: false, error: '認証が必要です' }, 401)
+
   const characterId = c.req.param('characterId')
-  await c.env.DB.prepare(
-    'DELETE FROM conversations WHERE character_id = ?'
-  ).bind(characterId).run()
+  const ch = await c.env.DB.prepare(
+    'SELECT id FROM characters WHERE id = ? AND user_id = ?'
+  ).bind(characterId, user.id).first()
+  if (!ch) return c.json({ success: false, error: 'キャラクターが見つかりません' }, 404)
+
+  await c.env.DB.prepare('DELETE FROM conversations WHERE character_id = ?').bind(characterId).run()
   return c.json({ success: true, message: '会話履歴を削除しました' })
 })
 

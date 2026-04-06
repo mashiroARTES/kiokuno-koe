@@ -8,6 +8,7 @@ import memories from './routes/memories'
 import minimaxRoutes from './routes/minimax'
 import chat from './routes/chat'
 import finetune from './routes/finetune'
+import auth, { validateSession } from './routes/auth'
 
 type Bindings = {
   DB: D1Database
@@ -28,6 +29,7 @@ app.use('/api/*', cors({
 app.use('/static/*', serveStatic({ root: './' }))
 
 // ── APIルーティング ───────────────────────────────────────────
+app.route('/api/auth', auth)
 app.route('/api/characters', characters)
 app.route('/api/memories', memories)
 app.route('/api/minimax', minimaxRoutes)
@@ -35,22 +37,33 @@ app.route('/api/chat', chat)
 app.route('/api/finetune', finetune)
 
 // ── 記憶エイリアス API（/memories/ パス非使用） ──────────────
+function getToken(c: any): string | undefined {
+  return c.req.header('Authorization')?.replace('Bearer ', '')
+}
+
 // GET  /api/mem-list/:characterId  → 記憶一覧
 app.get('/api/mem-list/:characterId', async (c) => {
+  const user = await validateSession(c.env.DB, getToken(c))
+  if (!user) return c.json({ success: false, error: '認証が必要です' }, 401)
   const characterId = c.req.param('characterId')
   const { results } = await c.env.DB.prepare(
-    'SELECT * FROM memories WHERE character_id = ? ORDER BY created_at DESC'
-  ).bind(characterId).all()
+    `SELECT m.* FROM memories m JOIN characters ch ON m.character_id = ch.id
+     WHERE m.character_id = ? AND ch.user_id = ? ORDER BY m.created_at DESC`
+  ).bind(characterId, user.id).all()
   return c.json({ success: true, data: results })
 })
 
 // POST /api/mem-save  → 記憶追加
 app.post('/api/mem-save', async (c) => {
+  const user = await validateSession(c.env.DB, getToken(c))
+  if (!user) return c.json({ success: false, error: '認証が必要です' }, 401)
   const body = await c.req.json()
   const { character_id, title, content, period, location, emotion, source_type } = body
   if (!character_id || !title || !content) {
     return c.json({ success: false, error: 'character_id, title, content は必須です' }, 400)
   }
+  const ch = await c.env.DB.prepare('SELECT id FROM characters WHERE id = ? AND user_id = ?').bind(character_id, user.id).first()
+  if (!ch) return c.json({ success: false, error: 'キャラクターが見つかりません' }, 404)
   const result = await c.env.DB.prepare(
     `INSERT INTO memories (character_id, title, content, period, location, emotion, source_type)
      VALUES (?, ?, ?, ?, ?, ?, ?)`
@@ -67,6 +80,8 @@ app.post('/api/mem-save', async (c) => {
 
 // PUT /api/mem-update/:id  → 記憶更新
 app.put('/api/mem-update/:id', async (c) => {
+  const user = await validateSession(c.env.DB, getToken(c))
+  if (!user) return c.json({ success: false, error: '認証が必要です' }, 401)
   const id = c.req.param('id')
   const body = await c.req.json()
   const { title, content, period, location, emotion } = body
@@ -77,16 +92,20 @@ app.put('/api/mem-update/:id', async (c) => {
       period   = COALESCE(?, period),
       location = COALESCE(?, location),
       emotion  = COALESCE(?, emotion)
-    WHERE id = ?`
-  ).bind(title || null, content || null, period || null, location || null, emotion || null, id).run()
+    WHERE id = ? AND character_id IN (SELECT id FROM characters WHERE user_id = ?)`
+  ).bind(title || null, content || null, period || null, location || null, emotion || null, id, user.id).run()
   const updated = await c.env.DB.prepare('SELECT * FROM memories WHERE id = ?').bind(id).first()
   return c.json({ success: true, data: updated })
 })
 
 // DELETE /api/mem-delete/:id  → 記憶削除
 app.delete('/api/mem-delete/:id', async (c) => {
+  const user = await validateSession(c.env.DB, getToken(c))
+  if (!user) return c.json({ success: false, error: '認証が必要です' }, 401)
   const id = c.req.param('id')
-  await c.env.DB.prepare('DELETE FROM memories WHERE id = ?').bind(id).run()
+  await c.env.DB.prepare(
+    'DELETE FROM memories WHERE id = ? AND character_id IN (SELECT id FROM characters WHERE user_id = ?)'
+  ).bind(id, user.id).run()
   return c.json({ success: true, message: '削除しました' })
 })
 
@@ -99,6 +118,10 @@ app.get('/api/health', (c) => {
     timestamp: new Date().toISOString(),
   })
 })
+
+// ── 利用規約・プライバシーポリシー ────────────────────────────
+app.get('/terms', (c) => c.html(getTermsHTML()))
+app.get('/privacy', (c) => c.html(getPrivacyHTML()))
 
 // ── フロントエンド（SPA） ─────────────────────────────────────
 app.get('*', (c) => {
@@ -163,12 +186,110 @@ function getIndexHTML(): string {
       <p class="text-xs text-gray-400">AI記憶継承システム</p>
     </div>
   </div>
-  <div class="flex items-center gap-2">
+  <div class="flex items-center gap-3">
     <span id="api-status" class="text-xs px-2 py-1 rounded-full bg-gray-700 text-gray-400">
       <i class="fas fa-circle text-xs mr-1"></i>確認中
     </span>
+    <!-- ログイン前 -->
+    <button id="btn-show-login" onclick="showAuthScreen()" class="text-xs px-3 py-1.5 rounded-lg bg-gold-500 text-navy-900 font-semibold hover:bg-gold-400 transition-colors hidden">
+      <i class="fas fa-sign-in-alt mr-1"></i>ログイン
+    </button>
+    <!-- ログイン後 -->
+    <div id="user-info" class="hidden flex items-center gap-2">
+      <span id="user-email-display" class="text-xs text-gray-400 max-w-[140px] truncate"></span>
+      <button onclick="logout()" class="text-xs px-3 py-1.5 rounded-lg bg-navy-700 border border-white/10 text-gray-300 hover:text-white hover:border-white/30 transition-colors">
+        <i class="fas fa-sign-out-alt mr-1"></i>ログアウト
+      </button>
+    </div>
   </div>
 </header>
+
+<!-- ── 認証画面オーバーレイ ── -->
+<div id="auth-screen" class="fixed inset-0 z-50 bg-navy-900 flex items-center justify-center p-4">
+  <div class="w-full max-w-md">
+    <!-- ロゴ -->
+    <div class="text-center mb-8">
+      <div class="w-16 h-16 rounded-full bg-gold-500/20 border border-gold-500/50 flex items-center justify-center mx-auto mb-4">
+        <i class="fas fa-dove text-gold-500 text-2xl"></i>
+      </div>
+      <h1 class="font-serif-jp text-2xl font-semibold text-gold-400">記憶の声</h1>
+      <p class="text-sm text-gray-400 mt-1">AI記憶継承システム</p>
+    </div>
+
+    <!-- タブ切替 -->
+    <div class="flex rounded-lg bg-navy-800 border border-white/10 p-1 mb-6">
+      <button id="auth-tab-login" onclick="switchAuthTab('login')"
+        class="flex-1 py-2 text-sm font-medium rounded-md bg-gold-500 text-navy-900 transition-colors">ログイン</button>
+      <button id="auth-tab-register" onclick="switchAuthTab('register')"
+        class="flex-1 py-2 text-sm font-medium text-gray-400 hover:text-white rounded-md transition-colors">新規登録</button>
+    </div>
+
+    <!-- ログインフォーム -->
+    <div id="auth-form-login">
+      <div class="space-y-4">
+        <div>
+          <label class="block text-xs text-gray-400 mb-1">メールアドレス</label>
+          <input id="login-email" type="email" placeholder="example@email.com"
+            class="w-full px-4 py-2.5 rounded-lg bg-navy-800 border border-white/10 text-white text-sm focus:border-gold-500/50 focus:outline-none">
+        </div>
+        <div>
+          <label class="block text-xs text-gray-400 mb-1">パスワード</label>
+          <input id="login-password" type="password" placeholder="パスワードを入力"
+            class="w-full px-4 py-2.5 rounded-lg bg-navy-800 border border-white/10 text-white text-sm focus:border-gold-500/50 focus:outline-none"
+            onkeydown="if(event.key==='Enter')doLogin()">
+        </div>
+        <p id="login-error" class="text-red-400 text-xs hidden"></p>
+        <button onclick="doLogin()"
+          class="w-full py-2.5 rounded-lg bg-gold-500 text-navy-900 font-semibold text-sm hover:bg-gold-400 transition-colors flex items-center justify-center gap-2">
+          <i class="fas fa-sign-in-alt"></i>ログイン
+        </button>
+      </div>
+    </div>
+
+    <!-- 新規登録フォーム -->
+    <div id="auth-form-register" class="hidden">
+      <div class="space-y-4">
+        <div>
+          <label class="block text-xs text-gray-400 mb-1">メールアドレス</label>
+          <input id="reg-email" type="email" placeholder="example@email.com"
+            class="w-full px-4 py-2.5 rounded-lg bg-navy-800 border border-white/10 text-white text-sm focus:border-gold-500/50 focus:outline-none">
+        </div>
+        <div>
+          <label class="block text-xs text-gray-400 mb-1">パスワード（8文字以上）</label>
+          <input id="reg-password" type="password" placeholder="パスワードを設定"
+            class="w-full px-4 py-2.5 rounded-lg bg-navy-800 border border-white/10 text-white text-sm focus:border-gold-500/50 focus:outline-none">
+        </div>
+        <div>
+          <label class="block text-xs text-gray-400 mb-1">パスワード（確認）</label>
+          <input id="reg-password2" type="password" placeholder="パスワードを再入力"
+            class="w-full px-4 py-2.5 rounded-lg bg-navy-800 border border-white/10 text-white text-sm focus:border-gold-500/50 focus:outline-none"
+            onkeydown="if(event.key==='Enter')doRegister()">
+        </div>
+        <!-- 規約同意 -->
+        <div class="bg-navy-800 border border-white/10 rounded-lg p-3 text-xs text-gray-400 leading-relaxed">
+          アカウントを作成することで、
+          <a href="/terms" target="_blank" class="text-gold-400 hover:underline">利用規約</a>
+          および
+          <a href="/privacy" target="_blank" class="text-gold-400 hover:underline">プライバシーポリシー</a>
+          に同意したものとみなします。
+        </div>
+        <label class="flex items-start gap-2 cursor-pointer">
+          <input type="checkbox" id="reg-agree"
+            class="mt-0.5 w-4 h-4 rounded border-gray-400 text-gold-500 focus:ring-gold-500">
+          <span class="text-xs text-gray-300">
+            <a href="/terms" target="_blank" class="text-gold-400 hover:underline">利用規約</a>および
+            <a href="/privacy" target="_blank" class="text-gold-400 hover:underline">プライバシーポリシー</a>に同意します
+          </span>
+        </label>
+        <p id="reg-error" class="text-red-400 text-xs hidden"></p>
+        <button onclick="doRegister()"
+          class="w-full py-2.5 rounded-lg bg-gold-500 text-navy-900 font-semibold text-sm hover:bg-gold-400 transition-colors flex items-center justify-center gap-2">
+          <i class="fas fa-user-plus"></i>アカウントを作成
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- ── メインレイアウト ── -->
 <div class="flex h-[calc(100vh-57px)]">
@@ -567,6 +688,195 @@ function getIndexHTML(): string {
 
 <!-- JSは外部ファイルから読み込み（テンプレートリテラルのエスケープ問題を回避） -->
 <script src="/static/app.js"></script>
+</body>
+</html>`
+}
+
+// ── 利用規約 HTML ──────────────────────────────────────────
+function getTermsHTML(): string {
+  return `<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>利用規約 - 記憶の声</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@300;400;500;700&family=Noto+Serif+JP:wght@400;600&display=swap" rel="stylesheet">
+  <style>body { font-family: 'Noto Sans JP', sans-serif; } .font-serif-jp { font-family: 'Noto Serif JP', serif; }</style>
+</head>
+<body class="bg-gray-50 text-gray-800 min-h-screen">
+  <header class="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
+    <a href="/" class="font-serif-jp text-xl font-semibold text-indigo-800">記憶の声</a>
+    <a href="/" class="text-sm text-indigo-600 hover:underline">← トップへ戻る</a>
+  </header>
+  <main class="max-w-3xl mx-auto px-6 py-12">
+    <h1 class="font-serif-jp text-3xl font-bold text-gray-900 mb-2">利用規約</h1>
+    <p class="text-sm text-gray-500 mb-10">最終更新日: 2026年4月6日</p>
+
+    <section class="mb-8">
+      <h2 class="text-lg font-bold text-gray-800 mb-3 border-l-4 border-indigo-500 pl-3">第1条（目的）</h2>
+      <p class="text-sm leading-7 text-gray-700">本利用規約（以下「本規約」）は、坂本義志（以下「運営者」）が提供する「記憶の声」（以下「本サービス」）の利用条件を定めるものです。ユーザーは本規約に同意のうえ、本サービスをご利用ください。</p>
+    </section>
+
+    <section class="mb-8">
+      <h2 class="text-lg font-bold text-gray-800 mb-3 border-l-4 border-indigo-500 pl-3">第2条（サービスの内容）</h2>
+      <p class="text-sm leading-7 text-gray-700">本サービスは、ユーザーが登録したキャラクター情報および記憶データをもとに、AIが対話を行う「AI記憶継承システム」です。音声合成・音声認識機能を含みます。</p>
+    </section>
+
+    <section class="mb-8">
+      <h2 class="text-lg font-bold text-gray-800 mb-3 border-l-4 border-indigo-500 pl-3">第3条（アカウント登録）</h2>
+      <ul class="text-sm leading-7 text-gray-700 list-disc list-inside space-y-1">
+        <li>ユーザーは正確な情報を用いてアカウントを登録するものとします。</li>
+        <li>アカウントの管理はユーザー自身の責任とします。</li>
+        <li>パスワードの管理を怠ったことによる損害について、運営者は責任を負いません。</li>
+        <li>1人につき1アカウントを原則とします。</li>
+      </ul>
+    </section>
+
+    <section class="mb-8">
+      <h2 class="text-lg font-bold text-gray-800 mb-3 border-l-4 border-indigo-500 pl-3">第4条（禁止事項）</h2>
+      <p class="text-sm leading-7 text-gray-700 mb-2">ユーザーは以下の行為を行ってはなりません。</p>
+      <ul class="text-sm leading-7 text-gray-700 list-disc list-inside space-y-1">
+        <li>他者のなりすましや虚偽情報の登録</li>
+        <li>本サービスの不正アクセス・リバースエンジニアリング</li>
+        <li>他のユーザーや第三者への迷惑行為</li>
+        <li>違法なコンテンツの登録・送信</li>
+        <li>本サービスの商業的無断利用</li>
+        <li>その他、運営者が不適切と判断する行為</li>
+      </ul>
+    </section>
+
+    <section class="mb-8">
+      <h2 class="text-lg font-bold text-gray-800 mb-3 border-l-4 border-indigo-500 pl-3">第5条（サービスの変更・中断）</h2>
+      <p class="text-sm leading-7 text-gray-700">運営者は、ユーザーへの事前通知なく、本サービスの内容を変更・中断・終了することができます。これにより生じた損害について、運営者は責任を負いません。</p>
+    </section>
+
+    <section class="mb-8">
+      <h2 class="text-lg font-bold text-gray-800 mb-3 border-l-4 border-indigo-500 pl-3">第6条（免責事項）</h2>
+      <ul class="text-sm leading-7 text-gray-700 list-disc list-inside space-y-1">
+        <li>AIが生成するコンテンツの正確性・適切性について、運営者は保証しません。</li>
+        <li>本サービスの利用によって生じた損害について、運営者は責任を負いません。</li>
+        <li>外部API（MiniMax等）の障害による損害についても同様です。</li>
+      </ul>
+    </section>
+
+    <section class="mb-8">
+      <h2 class="text-lg font-bold text-gray-800 mb-3 border-l-4 border-indigo-500 pl-3">第7条（準拠法・管轄）</h2>
+      <p class="text-sm leading-7 text-gray-700">本規約は日本法に準拠し、紛争が生じた場合は運営者の所在地を管轄する裁判所を専属的合意管轄とします。</p>
+    </section>
+
+    <section class="mb-8">
+      <h2 class="text-lg font-bold text-gray-800 mb-3 border-l-4 border-indigo-500 pl-3">第8条（お問い合わせ）</h2>
+      <p class="text-sm leading-7 text-gray-700">本規約に関するお問い合わせは下記までご連絡ください。</p>
+      <div class="mt-3 bg-white border border-gray-200 rounded-lg p-4 text-sm text-gray-700">
+        <p class="font-medium">運営者: 坂本義志</p>
+        <p>メールアドレス: <a href="mailto:elixir2761@gmail.com" class="text-indigo-600 hover:underline">elixir2761@gmail.com</a></p>
+      </div>
+    </section>
+  </main>
+  <footer class="border-t border-gray-200 text-center py-6 text-xs text-gray-400">
+    © 2026 坂本義志 / 記憶の声
+  </footer>
+</body>
+</html>`
+}
+
+// ── プライバシーポリシー HTML ──────────────────────────────
+function getPrivacyHTML(): string {
+  return `<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>プライバシーポリシー - 記憶の声</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@300;400;500;700&family=Noto+Serif+JP:wght@400;600&display=swap" rel="stylesheet">
+  <style>body { font-family: 'Noto Sans JP', sans-serif; } .font-serif-jp { font-family: 'Noto Serif JP', serif; }</style>
+</head>
+<body class="bg-gray-50 text-gray-800 min-h-screen">
+  <header class="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
+    <a href="/" class="font-serif-jp text-xl font-semibold text-indigo-800">記憶の声</a>
+    <a href="/" class="text-sm text-indigo-600 hover:underline">← トップへ戻る</a>
+  </header>
+  <main class="max-w-3xl mx-auto px-6 py-12">
+    <h1 class="font-serif-jp text-3xl font-bold text-gray-900 mb-2">プライバシーポリシー</h1>
+    <p class="text-sm text-gray-500 mb-10">最終更新日: 2026年4月6日</p>
+
+    <section class="mb-8">
+      <h2 class="text-lg font-bold text-gray-800 mb-3 border-l-4 border-indigo-500 pl-3">1. 収集する情報</h2>
+      <p class="text-sm leading-7 text-gray-700 mb-2">本サービスでは以下の情報を収集します。</p>
+      <ul class="text-sm leading-7 text-gray-700 list-disc list-inside space-y-1">
+        <li><strong>アカウント情報:</strong> メールアドレス・パスワード（ハッシュ化して保存）</li>
+        <li><strong>コンテンツ情報:</strong> キャラクター情報、記憶データ、会話履歴</li>
+        <li><strong>音声データ:</strong> 音声認識のために送信された音声ファイル（一時処理のみ、保存なし）</li>
+        <li><strong>利用ログ:</strong> アクセス日時、利用状況（個人を特定しない形式）</li>
+      </ul>
+    </section>
+
+    <section class="mb-8">
+      <h2 class="text-lg font-bold text-gray-800 mb-3 border-l-4 border-indigo-500 pl-3">2. 情報の利用目的</h2>
+      <ul class="text-sm leading-7 text-gray-700 list-disc list-inside space-y-1">
+        <li>本サービスの提供・運営・改善</li>
+        <li>ユーザー認証・アカウント管理</li>
+        <li>AI会話機能の実現（外部AI APIへの必要最小限の送信）</li>
+        <li>不正利用の防止・セキュリティ確保</li>
+      </ul>
+    </section>
+
+    <section class="mb-8">
+      <h2 class="text-lg font-bold text-gray-800 mb-3 border-l-4 border-indigo-500 pl-3">3. 第三者への提供</h2>
+      <p class="text-sm leading-7 text-gray-700 mb-2">ユーザーの個人情報を第三者に販売・提供することはありません。ただし、以下の場合は除きます。</p>
+      <ul class="text-sm leading-7 text-gray-700 list-disc list-inside space-y-1">
+        <li>ユーザーの同意がある場合</li>
+        <li>法令に基づく場合</li>
+        <li>サービス提供に必要な業務委託先（MiniMax API等）への提供（必要最小限）</li>
+      </ul>
+    </section>
+
+    <section class="mb-8">
+      <h2 class="text-lg font-bold text-gray-800 mb-3 border-l-4 border-indigo-500 pl-3">4. 外部サービスの利用</h2>
+      <p class="text-sm leading-7 text-gray-700 mb-2">本サービスは以下の外部サービスを利用します。</p>
+      <ul class="text-sm leading-7 text-gray-700 list-disc list-inside space-y-1">
+        <li><strong>MiniMax API:</strong> AI会話・音声合成・音声認識の処理。テキスト・音声データが送信されます。</li>
+        <li><strong>Cloudflare:</strong> サービスのホスティング・データベース管理。</li>
+      </ul>
+    </section>
+
+    <section class="mb-8">
+      <h2 class="text-lg font-bold text-gray-800 mb-3 border-l-4 border-indigo-500 pl-3">5. データの保管・セキュリティ</h2>
+      <ul class="text-sm leading-7 text-gray-700 list-disc list-inside space-y-1">
+        <li>パスワードはSHA-256でハッシュ化し、平文では保存しません。</li>
+        <li>通信はHTTPS（TLS）で暗号化されます。</li>
+        <li>データはCloudflare D1データベースに保管されます。</li>
+      </ul>
+    </section>
+
+    <section class="mb-8">
+      <h2 class="text-lg font-bold text-gray-800 mb-3 border-l-4 border-indigo-500 pl-3">6. ユーザーの権利</h2>
+      <p class="text-sm leading-7 text-gray-700">ユーザーは自身のデータについて、開示・訂正・削除を求める権利を有します。ご希望の場合は下記のお問い合わせ先までご連絡ください。</p>
+    </section>
+
+    <section class="mb-8">
+      <h2 class="text-lg font-bold text-gray-800 mb-3 border-l-4 border-indigo-500 pl-3">7. Cookieおよびローカルストレージ</h2>
+      <p class="text-sm leading-7 text-gray-700">本サービスはセッション管理のためにブラウザのlocalStorageを利用します。セッショントークンはサーバー側でも検証されます。</p>
+    </section>
+
+    <section class="mb-8">
+      <h2 class="text-lg font-bold text-gray-800 mb-3 border-l-4 border-indigo-500 pl-3">8. 改定</h2>
+      <p class="text-sm leading-7 text-gray-700">本ポリシーは予告なく改定する場合があります。重要な変更の場合はサービス上でお知らせします。</p>
+    </section>
+
+    <section class="mb-8">
+      <h2 class="text-lg font-bold text-gray-800 mb-3 border-l-4 border-indigo-500 pl-3">9. お問い合わせ</h2>
+      <div class="bg-white border border-gray-200 rounded-lg p-4 text-sm text-gray-700">
+        <p class="font-medium">運営者: 坂本義志</p>
+        <p>メールアドレス: <a href="mailto:elixir2761@gmail.com" class="text-indigo-600 hover:underline">elixir2761@gmail.com</a></p>
+      </div>
+    </section>
+  </main>
+  <footer class="border-t border-gray-200 text-center py-6 text-xs text-gray-400">
+    © 2026 坂本義志 / 記憶の声
+  </footer>
 </body>
 </html>`
 }

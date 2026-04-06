@@ -9,18 +9,26 @@ let state = {
   audioChunks: [],
   ttsEnabled: true,
   isLoading: false,
+  // 認証
+  sessionToken: null,
+  currentUser: null,
 }
 
-// ── API ───────────────────────────────────────────────────
+// ── API（認証トークン付き） ──────────────────────────────
 const api = {
+  _headers(extra = {}) {
+    const h = { 'Content-Type': 'application/json', ...extra }
+    if (state.sessionToken) h['Authorization'] = 'Bearer ' + state.sessionToken
+    return h
+  },
   async get(path) {
-    const r = await fetch(path)
+    const r = await fetch(path, { headers: this._headers({ 'Content-Type': undefined }) })
     return r.json()
   },
   async post(path, body) {
     const r = await fetch(path, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this._headers(),
       body: JSON.stringify(body),
     })
     return r.json()
@@ -28,21 +36,159 @@ const api = {
   async put(path, body) {
     const r = await fetch(path, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this._headers(),
       body: JSON.stringify(body),
     })
     return r.json()
   },
   async delete(path) {
-    const r = await fetch(path, { method: 'DELETE' })
+    const r = await fetch(path, {
+      method: 'DELETE',
+      headers: this._headers({ 'Content-Type': undefined }),
+    })
     return r.json()
   },
+}
+
+// ── 認証：セッション復元 ──────────────────────────────────
+async function restoreSession() {
+  const token = localStorage.getItem('kioku_session_token')
+  if (!token) return false
+  state.sessionToken = token
+  try {
+    const data = await api.get('/api/auth/me')
+    if (data.success) {
+      state.currentUser = data.data
+      return true
+    }
+  } catch (e) {}
+  localStorage.removeItem('kioku_session_token')
+  state.sessionToken = null
+  return false
+}
+
+// ── 認証画面の表示切替 ────────────────────────────────────
+function showAuthScreen() {
+  document.getElementById('auth-screen').style.display = 'flex'
+}
+function hideAuthScreen() {
+  document.getElementById('auth-screen').style.display = 'none'
+}
+
+function switchAuthTab(tab) {
+  const isLogin = tab === 'login'
+  document.getElementById('auth-tab-login').className = isLogin
+    ? 'flex-1 py-2 text-sm font-medium rounded-md bg-gold-500 text-navy-900 transition-colors'
+    : 'flex-1 py-2 text-sm font-medium text-gray-400 hover:text-white rounded-md transition-colors'
+  document.getElementById('auth-tab-register').className = !isLogin
+    ? 'flex-1 py-2 text-sm font-medium rounded-md bg-gold-500 text-navy-900 transition-colors'
+    : 'flex-1 py-2 text-sm font-medium text-gray-400 hover:text-white rounded-md transition-colors'
+  document.getElementById('auth-form-login').classList.toggle('hidden', !isLogin)
+  document.getElementById('auth-form-register').classList.toggle('hidden', isLogin)
+}
+
+async function doLogin() {
+  const email = document.getElementById('login-email').value.trim()
+  const password = document.getElementById('login-password').value
+  const errEl = document.getElementById('login-error')
+  errEl.classList.add('hidden')
+  if (!email || !password) { errEl.textContent = 'メールアドレスとパスワードを入力してください'; errEl.classList.remove('hidden'); return }
+  try {
+    const data = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password })
+    }).then(r => r.json())
+    if (!data.success) { errEl.textContent = data.error || 'ログインに失敗しました'; errEl.classList.remove('hidden'); return }
+    state.sessionToken = data.data.session_token
+    state.currentUser = data.data.user
+    localStorage.setItem('kioku_session_token', state.sessionToken)
+    onLoginSuccess()
+  } catch(e) {
+    errEl.textContent = '通信エラーが発生しました'; errEl.classList.remove('hidden')
+  }
+}
+
+async function doRegister() {
+  const email = document.getElementById('reg-email').value.trim()
+  const password = document.getElementById('reg-password').value
+  const password2 = document.getElementById('reg-password2').value
+  const agree = document.getElementById('reg-agree').checked
+  const errEl = document.getElementById('reg-error')
+  errEl.classList.add('hidden')
+  if (!email || !password || !password2) { errEl.textContent = 'すべての項目を入力してください'; errEl.classList.remove('hidden'); return }
+  if (password !== password2) { errEl.textContent = 'パスワードが一致しません'; errEl.classList.remove('hidden'); return }
+  if (password.length < 8) { errEl.textContent = 'パスワードは8文字以上で設定してください'; errEl.classList.remove('hidden'); return }
+  if (!agree) { errEl.textContent = '利用規約とプライバシーポリシーに同意してください'; errEl.classList.remove('hidden'); return }
+  try {
+    const data = await fetch('/api/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password })
+    }).then(r => r.json())
+    if (!data.success) { errEl.textContent = data.error || '登録に失敗しました'; errEl.classList.remove('hidden'); return }
+    state.sessionToken = data.data.session_token
+    state.currentUser = data.data.user
+    localStorage.setItem('kioku_session_token', state.sessionToken)
+    showToast('アカウントを作成しました！', 'success')
+    onLoginSuccess()
+  } catch(e) {
+    errEl.textContent = '通信エラーが発生しました'; errEl.classList.remove('hidden')
+  }
+}
+
+function onLoginSuccess() {
+  hideAuthScreen()
+  // ユーザー情報をヘッダーに表示
+  document.getElementById('btn-show-login').classList.add('hidden')
+  document.getElementById('user-info').classList.remove('hidden')
+  document.getElementById('user-info').style.display = 'flex'
+  document.getElementById('user-email-display').textContent = state.currentUser.email
+  // データ読み込み開始
+  loadCharacters()
+}
+
+async function logout() {
+  try {
+    await fetch('/api/auth/logout', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + state.sessionToken }
+    })
+  } catch(e) {}
+  state.sessionToken = null
+  state.currentUser = null
+  state.characters = []
+  state.selectedCharId = null
+  state.memories = []
+  localStorage.removeItem('kioku_session_token')
+  // UI リセット
+  document.getElementById('user-info').classList.add('hidden')
+  document.getElementById('btn-show-login').classList.remove('hidden')
+  document.getElementById('character-list').innerHTML = ''
+  document.getElementById('character-bar').classList.add('hidden')
+  document.getElementById('chat-area').innerHTML = `<div id="empty-state" class="flex flex-col items-center justify-center h-full text-center">
+    <div class="w-20 h-20 rounded-full bg-navy-800 border border-gold-500/30 flex items-center justify-center mb-4">
+      <i class="fas fa-dove text-gold-500 text-3xl"></i>
+    </div>
+    <h3 class="font-serif-jp text-xl text-gold-400 mb-2">記憶の声へようこそ</h3>
+    <p class="text-gray-400 text-sm max-w-xs">左のサイドバーからキャラクターを選択するか、新しいキャラクターを作成してください。</p>
+  </div>`
+  showToast('ログアウトしました')
+  showAuthScreen()
 }
 
 // ── 初期化 ────────────────────────────────────────────────
 async function init() {
   await checkHealth()
-  await loadCharacters()
+  // セッション復元を試みる
+  const restored = await restoreSession()
+  if (restored) {
+    onLoginSuccess()
+  } else {
+    // 未ログイン: ログイン画面を表示
+    document.getElementById('btn-show-login').classList.remove('hidden')
+    showAuthScreen()
+  }
 }
 
 async function checkHealth() {
@@ -519,7 +665,11 @@ async function transcribeAudio(audioBlob) {
   formData.append('audio_file', audioBlob, 'speech.webm')
   try {
     showToast('音声を文字起こし中…', 'info')
-    const response = await fetch('/api/chat/stt', { method: 'POST', body: formData })
+    const response = await fetch('/api/chat/stt', {
+      method: 'POST',
+      headers: state.sessionToken ? { 'Authorization': 'Bearer ' + state.sessionToken } : {},
+      body: formData
+    })
     const data = await response.json()
     if (data.success && data.data.transcript) {
       document.getElementById('chat-input').value = data.data.transcript
@@ -705,7 +855,11 @@ async function startVoiceClone() {
   formData.append('voice_name', char ? char.name : 'キャラクター')
 
   try {
-    const response = await fetch('/api/minimax/voice-clone-upload', { method: 'POST', body: formData })
+    const response = await fetch('/api/minimax/voice-clone-upload', {
+      method: 'POST',
+      headers: state.sessionToken ? { 'Authorization': 'Bearer ' + state.sessionToken } : {},
+      body: formData
+    })
     const data = await response.json()
     if (data.success) {
       // クローン成功: voice_id をキャラクターに自動適用
