@@ -536,7 +536,7 @@ chat.post('/stt', async (c) => {
   try {
     const sttForm = new FormData()
     sttForm.append('file', audioFile, audioFile.name || 'speech.webm')
-    sttForm.append('model', 'speech-01-240228')
+    sttForm.append('model', 'speech-2.8-turbo')
     sttForm.append('language', 'ja')
 
     const sttResponse = await fetch(`${MINIMAX_BASE_URL}/speech/transcriptions`, {
