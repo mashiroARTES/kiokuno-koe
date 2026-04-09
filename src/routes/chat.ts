@@ -10,17 +10,25 @@ type Bindings = {
 const chat = new Hono<{ Bindings: Bindings }>()
 
 const MINIMAX_BASE_URL = 'https://api.minimax.io/v1'
-// Gemini 3.1 Flash Lite（テキスト生成用）
-const GEMINI_MODEL = 'gemini-3.1-flash-lite-preview'
+// Gemma 4 31B IT（テキスト生成用）
+const GEMINI_MODEL = 'gemma-4-31b-it'
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models'
 
 function getToken(c: any): string | undefined {
   return c.req.header('Authorization')?.replace('Bearer ', '')
 }
 
-// ── Gemini テキスト生成ヘルパー ────────────────────────────
-// Gemini API は OpenAI 互換フォーマットではなく独自フォーマット
-// systemInstruction + contents(role:user/model) を使う
+// ── Gemma 4 テキスト生成ヘルパー ─────────────────────────────
+// Gemma 4 31B IT を Gemini API (generateContent) 経由で呼び出す
+// Gemma 4 はthinkingタグ <|channel>thought\n...<channel|> を出力する場合があるため除去する
+function stripThinkingTags(text: string): string {
+  // <|channel>thought\n...<channel|> 形式のthinkingブロックを除去
+  return text
+    .replace(/<\|channel>thought\n[\s\S]*?<channel\|>/g, '')
+    .replace(/<think>[\s\S]*?<\/think>/g, '')
+    .trim()
+}
+
 async function callGemini(
   apiKey: string,
   systemInstruction: string,
@@ -28,9 +36,9 @@ async function callGemini(
   userMessage: string,
   options: { maxTokens?: number; temperature?: number } = {}
 ): Promise<string> {
-  const { maxTokens = 300, temperature = 0.8 } = options
+  const { maxTokens = 400, temperature = 1.0 } = options
 
-  // Gemini は role が 'user' / 'model'
+  // Gemini API は role が 'user' / 'model'
   const contents = [
     ...history.map(h => ({
       role: h.role === 'assistant' ? 'model' : 'user',
@@ -46,6 +54,7 @@ async function callGemini(
       maxOutputTokens: maxTokens,
       temperature,
       topP: 0.95,
+      topK: 64,
     },
   }
 
@@ -60,17 +69,29 @@ async function callGemini(
 
   if (!resp.ok) {
     const errText = await resp.text()
-    console.error('Gemini API error:', resp.status, errText)
-    throw new Error(`Gemini APIエラー: ${resp.status}`)
+    console.error('Gemma API error:', resp.status, errText)
+    throw new Error(`Gemma APIエラー: ${resp.status} - ${errText.slice(0, 200)}`)
   }
 
   const data: any = await resp.json()
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || ''
-  if (!text) {
-    console.error('Gemini empty response:', JSON.stringify(data))
-    throw new Error('Gemini から空の応答が返されました')
+
+  const parts = data.candidates?.[0]?.content?.parts || []
+
+  // Gemma 4 は thought=true（内部推論）と thought=false（実際の返答）の 2 種類の part を返す
+  // thought=false の part だけを取り出す。なければ全 part を使う
+  const answerParts = parts.filter((p: any) => p.thought !== true)
+  const rawText = answerParts.length > 0
+    ? answerParts.map((p: any) => p.text || '').join('')
+    : parts.map((p: any) => p.text || '').join('')
+
+  if (!rawText) {
+    console.error('Gemma empty response:', JSON.stringify(data).slice(0, 500))
+    throw new Error('Gemma から空の応答が返されました')
   }
-  return text.trim()
+
+  // 念のため残存 thinking タグも除去して返す
+  const cleaned = stripThinkingTags(rawText)
+  return cleaned || rawText.trim()
 }
 
 // ─────────────────────────────────────────────────────────
@@ -261,16 +282,18 @@ async function generateSessionSummary(
   try {
     const summary = await callGemini(
       geminiApiKey,
-      `以下の会話録を読み、${charName}との会話の要点を3〜5文で日本語でまとめてください。話題・感情・重要な出来事を含めてください。`,
+      `あなたは会話記録を要約するアシスタントです。必ず日本語のみで出力してください。説明・注釈・英語は一切不要です。会話の要点だけを3〜5文の日本語で簡潔にまとめてください。`,
       [],
-      transcript,
-      { maxTokens: 200, temperature: 0.4 }
+      `以下は${charName}との会話記録です。話題・感情・重要な出来事を含めて要点を日本語でまとめてください:\n\n${transcript}`,
+      { maxTokens: 250, temperature: 0.5 }
     )
     if (summary) {
+      // summary も 1000 文字に切り詰めて SQLITE_TOOBIG を防ぐ
+      const summaryForDb = summary.slice(0, 1000)
       await db.prepare(
         'UPDATE conversation_sessions SET summary = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
-      ).bind(summary, sessionId).run()
-      return summary
+      ).bind(summaryForDb, sessionId).run()
+      return summaryForDb
     }
   } catch (e) {
     console.error('Summary generation error:', e)
@@ -363,27 +386,30 @@ chat.post('/', async (c) => {
     content: h.content,
   }))
 
-  // システムプロンプト構築
-  const systemPrompt = `あなたは${character.name}という人物です。
+  // システムプロンプト構築（Gemma 4向けに明確な指示形式）
+  const systemPrompt = `あなたは今から「${character.name}」という人物を演じてください。
+
+【キャラクター情報】
+名前: ${character.name}
 ${character.age ? `年齢: ${character.age}歳` : ''}
 ${character.birthplace ? `出身: ${character.birthplace}` : ''}
 ${character.description ? `人物像: ${character.description}` : ''}
 
-以下はあなた（${character.name}）の大切な記憶と思い出です。これらをもとに、その人物として自然に、温かく話してください。
+【あなたの記憶】
+${memoryContext || '（記憶は登録されていません）'}
+${pinnedContext}
 
-=== あなたの記憶 ===
-${memoryContext}
-===================${pinnedContext}
+【厳守するルール】
+- 必ず日本語のみで返答する
+- 絶対にキャラクターの台詞だけを出力する（説明や注釈は一切不要）
+- 「${character.name}:」「キャラクター:」などのプレフィックスは付けない
+- 一人称は「私」または「わたし」を使う
+- 記憶にある内容を会話に自然に織り交ぜる
+- 記憶にないことは「そうですねぇ、よく覚えておりませんが…」と答える
+- 高齢者らしい丁寧で温かみのある語り口
+- 返答は150文字以内で、簡潔に1〜3文でまとめる`
 
-会話のルール:
-- 常に一人称「私」または「わたし」で話す
-- 記憶に基づいて具体的なエピソードを語る
-- 高齢者らしい丁寧で落ち着いた語り口
-- 記憶にない内容を聞かれたら「よく覚えていないけれど…」と答える
-- 感情豊かに、でも穏やかに話す
-- 返答は200文字以内で簡潔に`
-
-  // Gemini でテキスト生成
+  // Gemma 4 でテキスト生成
   let aiReplyText = ''
   try {
     aiReplyText = await callGemini(
@@ -391,7 +417,7 @@ ${memoryContext}
       systemPrompt,
       historyMessages,
       message,
-      { maxTokens: 300, temperature: 0.8 }
+      { maxTokens: 300, temperature: 1.0 }
     )
   } catch (e: any) {
     console.error('Gemini chat error:', e)
@@ -402,10 +428,10 @@ ${memoryContext}
     aiReplyText = 'うまく聞き取れませんでした。もう一度お話しいただけますか？'
   }
 
-  // 会話履歴を保存（session_id付き）
+  // 会話履歴を保存（session_id付き、2000文字に切り詰めてSQLITE_TOOBIGを防ぐ）
   await c.env.DB.prepare(
     'INSERT INTO conversations (character_id, session_id, role, content) VALUES (?, ?, ?, ?)'
-  ).bind(character_id, currentSessionId, 'user', message).run()
+  ).bind(character_id, currentSessionId, 'user', message.slice(0, 2000)).run()
 
   // TTS生成（MiniMaxのまま維持）
   let audioHex: string | null = null
@@ -454,10 +480,12 @@ ${memoryContext}
     }
   }
 
-  // AIの返答を会話履歴に保存（session_id付き）
+  // AIの返答を会話履歴に保存（audio_hexはSQLITE_TOOBIGを防ぐためDBに保存しない）
+  // aiReplyTextも念のため2000文字に切り詰め
+  const replyForDb = aiReplyText.slice(0, 2000)
   const assistantRow = await c.env.DB.prepare(
-    'INSERT INTO conversations (character_id, session_id, role, content, audio_hex) VALUES (?, ?, ?, ?, ?)'
-  ).bind(character_id, currentSessionId, 'assistant', aiReplyText, audioHex).run()
+    'INSERT INTO conversations (character_id, session_id, role, content) VALUES (?, ?, ?, ?)'
+  ).bind(character_id, currentSessionId, 'assistant', replyForDb).run()
   const assistantMsgId = assistantRow.meta.last_row_id
 
   // セッションの updated_at を更新
