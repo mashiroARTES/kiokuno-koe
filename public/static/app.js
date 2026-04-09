@@ -309,7 +309,7 @@ async function selectCharacter(charId) {
   updateVoiceBadge(char)
 
   // ツールボタン有効化
-  const btnIds = ['btn-add-memory','btn-voice-clone','btn-export','btn-script','btn-inf-script','btn-clear-history']
+  const btnIds = ['btn-add-memory','btn-voice-clone','btn-clear-history']
   btnIds.forEach(btnId => {
     const el = document.getElementById(btnId)
     if (el) el.disabled = false
@@ -1259,19 +1259,6 @@ async function startVoiceClone() {
   }
 }
 
-// ── エクスポート・スクリプト ──────────────────────────────
-function exportDataset() {
-  if (!state.selectedCharId) return
-  window.location.href = '/api/finetune/export/' + state.selectedCharId
-}
-function downloadTrainScript() {
-  if (!state.selectedCharId) return
-  window.location.href = '/api/finetune/script/' + state.selectedCharId
-}
-function downloadInferenceScript() {
-  if (!state.selectedCharId) return
-  window.location.href = '/api/finetune/inference-script/' + state.selectedCharId
-}
 
 async function clearHistory() {
   if (!state.selectedCharId || !state.currentSessionId) return

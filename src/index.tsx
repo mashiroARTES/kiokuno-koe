@@ -7,7 +7,6 @@ import characters from './routes/characters'
 import memories from './routes/memories'
 import minimaxRoutes from './routes/minimax'
 import chat from './routes/chat'
-import finetune from './routes/finetune'
 import auth, { validateSession } from './routes/auth'
 
 type Bindings = {
@@ -35,8 +34,6 @@ app.route('/api/characters', characters)
 app.route('/api/memories', memories)
 app.route('/api/minimax', minimaxRoutes)
 app.route('/api/chat', chat)
-app.route('/api/finetune', finetune)
-
 // ── 記憶エイリアス API（/memories/ パス非使用） ──────────────
 function getToken(c: any): string | undefined {
   return c.req.header('Authorization')?.replace('Bearer ', '')
@@ -346,32 +343,6 @@ function getIndexHTML(): string {
         <div class="text-left">
           <div class="text-white text-xs font-medium">声を設定する</div>
           <div class="text-gray-400 text-xs">プリセット・ID入力・クローン</div>
-        </div>
-      </button>
-
-      <div class="text-xs text-gray-400 uppercase tracking-wider mt-4 mb-2">学習データ</div>
-      <button onclick="exportDataset()" id="btn-export" disabled
-        class="w-full py-2.5 px-3 rounded-lg bg-navy-700 border border-white/10 text-sm hover:border-gold-500/40 transition-colors flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed">
-        <i class="fas fa-file-export text-blue-400"></i>
-        <div class="text-left">
-          <div class="text-white text-xs font-medium">JSONLエクスポート</div>
-          <div class="text-gray-400 text-xs">LoRA学習用データセット</div>
-        </div>
-      </button>
-      <button onclick="downloadTrainScript()" id="btn-script" disabled
-        class="w-full py-2.5 px-3 rounded-lg bg-navy-700 border border-white/10 text-sm hover:border-gold-500/40 transition-colors flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed">
-        <i class="fas fa-code text-purple-400"></i>
-        <div class="text-left">
-          <div class="text-white text-xs font-medium">学習スクリプト生成</div>
-          <div class="text-gray-400 text-xs">Gemma 4 QLoRA用Pythonコード</div>
-        </div>
-      </button>
-      <button onclick="downloadInferenceScript()" id="btn-inf-script" disabled
-        class="w-full py-2.5 px-3 rounded-lg bg-navy-700 border border-white/10 text-sm hover:border-gold-500/40 transition-colors flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed">
-        <i class="fas fa-terminal text-green-400"></i>
-        <div class="text-left">
-          <div class="text-white text-xs font-medium">推論スクリプト生成</div>
-          <div class="text-gray-400 text-xs">LoRAアダプタで会話実行</div>
         </div>
       </button>
 
