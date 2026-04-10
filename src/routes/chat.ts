@@ -512,14 +512,14 @@ ${pinnedContext}
 })
 
 // ─────────────────────────────────────────────────────────
-// 音声入力 (STT) - MiniMax維持
+// 音声入力 (STT) - Gemini API (インライン base64)
 // ─────────────────────────────────────────────────────────
 chat.post('/stt', async (c) => {
   const user = await validateSession(c.env.DB, getToken(c))
   if (!user) return c.json({ success: false, error: '認証が必要です' }, 401)
 
-  const apiKey = c.env?.MINIMAX_API_KEY || ''
-  if (!apiKey) return c.json({ success: false, error: 'APIキーが設定されていません' }, 500)
+  const geminiApiKey = c.env?.GEMINI_API_KEY || ''
+  if (!geminiApiKey) return c.json({ success: false, error: 'GEMINI_API_KEY が設定されていません' }, 500)
 
   let formData: FormData
   try {
@@ -534,25 +534,63 @@ chat.post('/stt', async (c) => {
   }
 
   try {
-    const sttForm = new FormData()
-    sttForm.append('file', audioFile, audioFile.name || 'speech.webm')
-    sttForm.append('model', 'speech-2.8-turbo')
-    sttForm.append('language', 'ja')
+    // File → ArrayBuffer → base64
+    const arrayBuffer = await audioFile.arrayBuffer()
+    const uint8 = new Uint8Array(arrayBuffer)
+    let binary = ''
+    for (let i = 0; i < uint8.length; i++) binary += String.fromCharCode(uint8[i])
+    const base64Audio = btoa(binary)
 
-    const sttResponse = await fetch(`${MINIMAX_BASE_URL}/speech/transcriptions`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${apiKey}` },
-      body: sttForm,
-    })
-
-    if (!sttResponse.ok) {
-      return c.json({ success: false, error: 'STT APIエラー、ブラウザ音声認識をお使いください' }, 500)
+    // MIME タイプ判定（WebM / WAV / MP3 / AAC / OGG / FLAC 対応）
+    const fileName = audioFile.name || ''
+    const fileType = audioFile.type || ''
+    let mimeType = fileType || 'audio/webm'
+    if (!mimeType.startsWith('audio/')) {
+      if (fileName.endsWith('.wav')) mimeType = 'audio/wav'
+      else if (fileName.endsWith('.mp3')) mimeType = 'audio/mp3'
+      else if (fileName.endsWith('.ogg')) mimeType = 'audio/ogg'
+      else if (fileName.endsWith('.flac')) mimeType = 'audio/flac'
+      else if (fileName.endsWith('.aac')) mimeType = 'audio/aac'
+      else mimeType = 'audio/webm'
     }
 
-    const sttData: any = await sttResponse.json()
-    const transcript = sttData.text || sttData.data?.text || ''
+    // Gemini API へ送信（gemini-2.0-flash はマルチモーダル音声対応）
+    const geminiRes = await fetch(
+      `${GEMINI_API_BASE}/gemini-2.0-flash:generateContent?key=${geminiApiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              {
+                text: '以下の音声を日本語で文字起こしして。発話内容のテキストのみ返して。説明や注釈は不要。発話がない場合は空文字列だけ返して。',
+              },
+              {
+                inlineData: { mimeType, data: base64Audio },
+              },
+            ],
+          }],
+          generationConfig: { temperature: 0 },
+        }),
+      }
+    )
+
+    if (!geminiRes.ok) {
+      const errText = await geminiRes.text()
+      console.error('Gemini STT error:', errText)
+      return c.json({ success: false, error: 'STT APIエラー' }, 500)
+    }
+
+    const geminiData: any = await geminiRes.json()
+    const rawText: string = geminiData.candidates?.[0]?.content?.parts
+      ?.map((p: any) => p.text || '')
+      .join('') || ''
+    const transcript = rawText.trim()
+
     return c.json({ success: true, data: { transcript } })
   } catch (e: any) {
+    console.error('STT exception:', e.message)
     return c.json({ success: false, error: e.message }, 500)
   }
 })
