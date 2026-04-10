@@ -595,6 +595,118 @@ chat.post('/stt', async (c) => {
   }
 })
 
+// ─────────────────────────────────────────────────────────
+// 日記生成
+// POST /api/chat/diary
+// body: { session_id, character_id }
+// ─────────────────────────────────────────────────────────
+chat.post('/diary', async (c) => {
+  const user = await validateSession(c.env.DB, getToken(c))
+  if (!user) return c.json({ success: false, error: '認証が必要です' }, 401)
+
+  const geminiApiKey = c.env?.GEMINI_API_KEY || ''
+  if (!geminiApiKey) return c.json({ success: false, error: 'GEMINI_API_KEY が設定されていません' }, 500)
+
+  const body = await c.req.json()
+  const { session_id, character_id } = body
+  if (!session_id || !character_id) {
+    return c.json({ success: false, error: 'session_id と character_id は必須です' }, 400)
+  }
+
+  // セッション所有権確認
+  const session: any = await c.env.DB.prepare(
+    `SELECT cs.id, cs.title FROM conversation_sessions cs
+     JOIN characters ch ON cs.character_id = ch.id
+     WHERE cs.id = ? AND ch.user_id = ?`
+  ).bind(session_id, user.id).first()
+  if (!session) return c.json({ success: false, error: 'セッションが見つかりません' }, 404)
+
+  // キャラクター情報取得
+  const character: any = await c.env.DB.prepare(
+    'SELECT * FROM characters WHERE id = ? AND user_id = ?'
+  ).bind(character_id, user.id).first()
+  if (!character) return c.json({ success: false, error: 'キャラクターが見つかりません' }, 404)
+
+  // 会話履歴取得（最大40件）
+  const { results: msgs } = await c.env.DB.prepare(
+    `SELECT role, content FROM conversations
+     WHERE session_id = ?
+     ORDER BY created_at ASC LIMIT 40`
+  ).bind(session_id).all() as any
+
+  if (!msgs || msgs.length === 0) {
+    return c.json({ success: false, error: 'この会話にはまだメッセージがありません' }, 400)
+  }
+
+  // 会話記録をテキスト化
+  const transcript = msgs
+    .map((m: any) => `${m.role === 'user' ? '私' : character.name}: ${m.content}`)
+    .join('\n')
+
+  // 記憶コンテキスト取得
+  const { results: memoriesRaw } = await c.env.DB.prepare(
+    'SELECT title, content, period, location FROM memories WHERE character_id = ? ORDER BY period ASC LIMIT 10'
+  ).bind(character_id).all()
+
+  const memoryContext = memoriesRaw.length > 0
+    ? '\n【キャラクターの記憶・背景】\n' + memoriesRaw.map((m: any) => {
+        const parts = [`「${m.title}」`]
+        if (m.period) parts.push(m.period)
+        if (m.location) parts.push(m.location)
+        parts.push(m.content)
+        return parts.join(' — ')
+      }).join('\n')
+    : ''
+
+  // 日付情報
+  const today = new Date().toLocaleDateString('ja-JP', {
+    year: 'numeric', month: 'long', day: 'numeric', weekday: 'long'
+  })
+
+  const prompt = `あなたは感性豊かな日記・エッセイライターです。
+以下の会話記録をもとに、「私」の視点で書いた500字程度の日記エッセイを作成してください。
+
+【執筆ルール】
+- 日付: ${today}
+- 「私」の視点・一人称で書く（語り手はユーザー側）
+- エッセイ仕立て：情景・感情・記憶の断片を丁寧な文章で綴る
+- ${character.name}との会話で感じたこと、印象に残った言葉、心の動きを中心に描写する
+- 美しく流れるような日本語で、詩的すぎず、自然な随筆調にする
+- 末尾に一行あけて短い締めのひとこと（一文）を添える
+- 500字前後（400〜600字）を目安に
+- 説明・注釈・英語・タグは一切不要。本文のみ出力する${memoryContext}
+
+【会話記録】
+${transcript}`
+
+  try {
+    const diary = await callGemini(
+      geminiApiKey,
+      '感性豊かな日記・エッセイライターとして、与えられた会話記録から美しい日記エッセイを日本語で執筆します。',
+      [],
+      prompt,
+      { maxTokens: 800, temperature: 1.0 }
+    )
+
+    if (!diary) {
+      return c.json({ success: false, error: '日記の生成に失敗しました' }, 500)
+    }
+
+    return c.json({
+      success: true,
+      data: {
+        diary,
+        session_title: session.title,
+        character_name: character.name,
+        date: today,
+      }
+    })
+  } catch (e: any) {
+    console.error('Diary generation error:', e)
+    return c.json({ success: false, error: e.message || '日記の生成に失敗しました' }, 500)
+  }
+})
+
 // 会話履歴取得（セッション別）
 // GET /api/chat/history/:characterId?session_id=xxx
 chat.get('/history/:characterId', async (c) => {

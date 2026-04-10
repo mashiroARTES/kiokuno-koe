@@ -393,6 +393,13 @@ function getIndexHTML(): string {
             class="w-4 h-4 accent-gold-500 cursor-pointer">
           <span class="text-xs text-gray-300">この会話を覚えておく（他の会話に引き継ぐ）</span>
         </label>
+        <!-- 日記生成ボタン -->
+        <button id="btn-diary" onclick="generateDiary()"
+          class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-navy-700 border border-gold-500/30 text-xs text-gold-400 hover:bg-gold-500/10 hover:border-gold-400 transition-all flex-shrink-0"
+          title="この会話から日記を生成">
+          <i class="fas fa-feather-alt"></i>
+          <span>日記を書く</span>
+        </button>
         <!-- サマリー表示エリア -->
         <div id="session-summary-area" class="hidden flex-1">
           <div class="text-xs text-gray-500 mb-0.5"><i class="fas fa-file-alt mr-1"></i>要約</div>
@@ -676,6 +683,49 @@ function getIndexHTML(): string {
           <i class="fas fa-microphone-alt"></i>クローン開始
         </button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- 日記モーダル -->
+<div id="modal-diary" class="hidden fixed inset-0 modal-overlay z-50 flex items-center justify-center p-4">
+  <div class="bg-navy-800 rounded-2xl border border-gold-500/30 w-full max-w-lg shadow-2xl flex flex-col max-h-[90vh]">
+    <!-- ヘッダー -->
+    <div class="flex items-center justify-between p-5 border-b border-white/10 flex-shrink-0">
+      <div>
+        <h3 class="font-serif-jp text-gold-400 font-semibold text-lg flex items-center gap-2">
+          <i class="fas fa-feather-alt"></i>今日の日記
+        </h3>
+        <p id="diary-meta" class="text-xs text-gray-500 mt-0.5"></p>
+      </div>
+      <button onclick="closeModal('modal-diary')" class="text-gray-400 hover:text-white"><i class="fas fa-times"></i></button>
+    </div>
+    <!-- 本文エリア -->
+    <div class="flex-1 overflow-y-auto p-5 scrollbar-thin">
+      <!-- ローディング -->
+      <div id="diary-loading" class="hidden flex flex-col items-center justify-center py-12 gap-4">
+        <div class="w-12 h-12 rounded-full border-2 border-gold-500/30 border-t-gold-400 animate-spin"></div>
+        <p class="text-sm text-gray-400 font-serif-jp">日記を綴っています…</p>
+      </div>
+      <!-- 日記本文 -->
+      <div id="diary-content" class="hidden">
+        <div id="diary-text" class="font-serif-jp text-gray-200 text-sm leading-loose whitespace-pre-wrap"></div>
+      </div>
+    </div>
+    <!-- フッターアクション -->
+    <div id="diary-actions" class="hidden p-4 border-t border-white/10 flex gap-3 flex-shrink-0">
+      <button onclick="copyDiary()"
+        class="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl border border-white/20 text-sm text-gray-300 hover:text-white hover:border-white/40 transition-colors">
+        <i class="fas fa-copy"></i>コピー
+      </button>
+      <button onclick="readDiaryAloud()"
+        class="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl border border-gold-500/40 text-sm text-gold-400 hover:bg-gold-500/10 hover:border-gold-400 transition-colors">
+        <i id="diary-tts-icon" class="fas fa-volume-up"></i><span id="diary-tts-label">読み上げ</span>
+      </button>
+      <button onclick="closeModal('modal-diary')"
+        class="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl bg-gold-500 text-navy-900 text-sm font-semibold hover:bg-gold-400 transition-colors">
+        <i class="fas fa-check"></i>閉じる
+      </button>
     </div>
   </div>
 </div>

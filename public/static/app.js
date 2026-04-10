@@ -1276,6 +1276,148 @@ async function clearHistory() {
   showToast('会話メッセージを削除しました', 'success')
 }
 
+// ── 日記生成 ───────────────────────────────────────────────
+
+// 日記TTS用の状態
+let _diaryAudio = null
+
+async function generateDiary() {
+  if (!state.selectedCharId || !state.currentSessionId) {
+    showToast('キャラクターと会話セッションを選択してください', 'error')
+    return
+  }
+
+  // モーダルを開いてローディング表示
+  openModal('modal-diary')
+  document.getElementById('diary-loading').classList.remove('hidden')
+  document.getElementById('diary-content').classList.add('hidden')
+  document.getElementById('diary-actions').classList.add('hidden')
+  document.getElementById('diary-meta').textContent = ''
+
+  try {
+    const data = await api.post('/api/chat/diary', {
+      session_id: state.currentSessionId,
+      character_id: state.selectedCharId,
+    })
+
+    document.getElementById('diary-loading').classList.add('hidden')
+
+    if (!data.success) {
+      showToast(data.error || '日記の生成に失敗しました', 'error')
+      closeModal('modal-diary')
+      return
+    }
+
+    // 日記本文を表示
+    document.getElementById('diary-text').textContent = data.data.diary
+    document.getElementById('diary-meta').textContent =
+      `${data.data.date} — ${data.data.character_name}との会話より`
+    document.getElementById('diary-content').classList.remove('hidden')
+    document.getElementById('diary-actions').classList.remove('hidden')
+
+    // TTS状態をリセット
+    _diaryAudio = null
+    document.getElementById('diary-tts-icon').className = 'fas fa-volume-up'
+    document.getElementById('diary-tts-label').textContent = '読み上げ'
+  } catch (e) {
+    document.getElementById('diary-loading').classList.add('hidden')
+    showToast('日記の生成中にエラーが発生しました', 'error')
+    closeModal('modal-diary')
+  }
+}
+
+// 日記テキストをクリップボードへコピー
+async function copyDiary() {
+  const text = document.getElementById('diary-text').textContent
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    showToast('日記をコピーしました', 'success')
+  } catch {
+    showToast('コピーに失敗しました', 'error')
+  }
+}
+
+// 日記を MiniMax TTS で読み上げ
+async function readDiaryAloud() {
+  const text = document.getElementById('diary-text').textContent
+  if (!text) return
+
+  const iconEl = document.getElementById('diary-tts-icon')
+  const labelEl = document.getElementById('diary-tts-label')
+
+  // 再生中なら停止
+  if (_diaryAudio && !_diaryAudio.paused) {
+    _diaryAudio.pause()
+    iconEl.className = 'fas fa-volume-up'
+    labelEl.textContent = '読み上げ'
+    return
+  }
+
+  // 一時停止中なら再開
+  if (_diaryAudio && _diaryAudio.paused && _diaryAudio.currentTime > 0) {
+    _diaryAudio.play()
+    iconEl.className = 'fas fa-pause'
+    labelEl.textContent = '停止'
+    return
+  }
+
+  // TTS生成
+  iconEl.className = 'fas fa-spinner fa-spin'
+  labelEl.textContent = '生成中…'
+
+  try {
+    // キャラクターの voice_id を取得
+    const char = state.characters?.find(c => c.id === state.selectedCharId)
+    const voiceId = char?.voice_id || 'Wise_Woman'
+
+    const resp = await fetch('/api/minimax/tts', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(state.sessionToken ? { 'Authorization': 'Bearer ' + state.sessionToken } : {}),
+      },
+      body: JSON.stringify({ text: text.slice(0, 1000), voice_id: voiceId }),
+    })
+    const data = await resp.json()
+
+    if (!data.success || !data.audio_hex) {
+      showToast('読み上げ音声の生成に失敗しました', 'error')
+      iconEl.className = 'fas fa-volume-up'
+      labelEl.textContent = '読み上げ'
+      return
+    }
+
+    // hex → Uint8Array → Blob → Audio
+    const hex = data.audio_hex
+    const bytes = new Uint8Array(hex.length / 2)
+    for (let i = 0; i < bytes.length; i++) {
+      bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
+    }
+    const blob = new Blob([bytes], { type: 'audio/mp3' })
+    const url = URL.createObjectURL(blob)
+
+    _diaryAudio = new Audio(url)
+    _diaryAudio.onended = () => {
+      iconEl.className = 'fas fa-volume-up'
+      labelEl.textContent = '読み上げ'
+      URL.revokeObjectURL(url)
+    }
+    _diaryAudio.onpause = () => {
+      if (_diaryAudio.ended) return
+      iconEl.className = 'fas fa-volume-up'
+      labelEl.textContent = '読み上げ'
+    }
+    _diaryAudio.play()
+    iconEl.className = 'fas fa-pause'
+    labelEl.textContent = '停止'
+  } catch (e) {
+    showToast('読み上げエラー: ' + e.message, 'error')
+    iconEl.className = 'fas fa-volume-up'
+    labelEl.textContent = '読み上げ'
+  }
+}
+
 // ── UI ヘルパー ───────────────────────────────────────────
 function switchSideTab(tab) {
   ['characters','memories','tools'].forEach(t => {
